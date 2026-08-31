@@ -1,0 +1,85 @@
+{
+  "schema_version": 1,
+  "skill_id": "ppt-master",
+  "display_name": "PPT 创作",
+  "description": "从需求与材料生成原生可编辑的 PPTX 演示文稿",
+  "icon": "presentation",
+  "enabled": true,
+  "workspace": {
+    "init": {
+      "mode": "command",
+      "command": [
+        "{python}",
+        "skills/ppt-master/scripts/project_manager.py",
+        "init",
+        "{workspace_name}",
+        "--dir",
+        "{workspace_parent}",
+        "--format",
+        "ppt169",
+        "--quick-generate"
+      ]
+    },
+    "continue_seed_dir": "ppt-project",
+    "fresh_root_suffix": "ppt169",
+    "authoring_root": {
+      "marker_dir": "svg_output"
+    },
+    "progress_dirs": ["svg_output", "exports", "validation"]
+  },
+  "agent": {
+    "entry_doc": "skills/ppt-master/SKILL.md",
+    "prompt_strategy": "ppt_quick_generate",
+    "runtime_mode": "quick",
+    "repo_conventions_doc": "AGENTS.md"
+  },
+  "artifacts": [
+    {
+      "kind": "svg",
+      "glob": "svg_output/*.svg",
+      "content_type": "image/svg+xml"
+    },
+    {
+      "kind": "pptx",
+      "glob": "exports/*.pptx",
+      "content_type": "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    }
+  ],
+  "primary_artifact_kind": "pptx",
+  "validation_adapter": "ppt_revision",
+  "features": {
+    "templates": true,
+    "page_refinement": true,
+    "editor": true,
+    "materials_upload": true,
+    "resume": true
+  },
+  "frontend": {
+    "hero_title": "把一个想法，变成一套能讲清楚的 PPT",
+    "hero_subtitle": "先梳理需求，再设计大纲；每一步都由你确认，生成后还能逐页对话精修。",
+    "composer_placeholder": "描述你想做的 PPT，例如：为集团管理层准备一份 15 页的云业务季度经营汇报……",
+    "create_button_label": "创建 PPT",
+    "projects_nav_label": "我的 PPT",
+    "quick_starts": ["季度经营分析", "产品发布方案", "行业解决方案"],
+    "stages": [
+      { "id": "requirements", "label": "需求梳理", "description": "确认表达目标" },
+      { "id": "outline", "label": "大纲设计", "description": "逐页组织内容" },
+      { "id": "template", "label": "选择模板", "description": "确定视觉表达" },
+      { "id": "generating", "label": "生成 PPT", "description": "实时生成任务" },
+      { "id": "preview", "label": "预览精修", "description": "查看与继续修改" }
+    ],
+    "outline": {
+      "item_label": "页",
+      "generator_prompt_key": "ppt-master",
+      "fields": [
+        { "name": "title", "label": "页面标题", "required": true, "max_length": 160 },
+        { "name": "purpose", "label": "本页目标", "required": false, "max_length": 500 },
+        { "name": "content", "label": "本页内容", "required": false, "max_length": 4000 },
+        { "name": "kind", "label": "页面类型", "required": false, "max_length": 64, "default": "内容页" },
+        { "name": "notes", "label": "讲解重点", "required": false, "max_length": 2000 }
+      ],
+      "first_item_is_title_page": true
+    },
+    "preview_kinds": ["svg"]
+  }
+}

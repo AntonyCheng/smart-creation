@@ -1,0 +1,84 @@
+{
+  "schema_version": 1,
+  "skill_id": "gongwen",
+  "display_name": "公文写作",
+  "description": "按 GB/T 9704—2012 体例生成通知、请示、报告、纪要等公文 DOCX，附审核单与排版预览",
+  "icon": "document",
+  "enabled": true,
+  "workspace": {
+    "init": {
+      "mode": "command"
+    },
+    "continue_seed_dir": "gongwen-project",
+    "fresh_root_suffix": null,
+    "authoring_root": {
+      "marker_dir": "exports"
+    },
+    "progress_dirs": ["drafts", "exports", "preview", "validation"]
+  },
+  "agent": {
+    "entry_doc": "skills/gongwen/SKILL.md",
+    "prompt_strategy": "gongwen_quick",
+    "runtime_mode": "quick",
+    "repo_conventions_doc": "AGENTS.md",
+    "env": {
+      "GONGWEN_RUNTIME_CONFIG": "{workspace}/gongwen-runtime.json"
+    }
+  },
+  "artifacts": [
+    {
+      "kind": "docx",
+      "glob": "exports/**/*.docx",
+      "content_type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+    },
+    {
+      "kind": "pdf",
+      "glob": "exports/*.pdf",
+      "content_type": "application/pdf"
+    },
+    {
+      "kind": "png",
+      "glob": "preview/*.png",
+      "content_type": "image/png"
+    }
+  ],
+  "primary_artifact_kind": "docx",
+  "validation_adapter": "gongwen_docx",
+  "validation": {
+    "min_chars": 200
+  },
+  "features": {
+    "templates": false,
+    "page_refinement": false,
+    "editor": false,
+    "materials_upload": true,
+    "resume": true
+  },
+  "frontend": {
+    "hero_title": "把一份要求，变成一份规范的公文",
+    "hero_subtitle": "按文种与体例组织内容，生成标准格式的 Word 文档与排版预览。",
+    "composer_placeholder": "描述你要写的公文，例如：起草一份关于 2026 年安全生产检查情况的通报……",
+    "create_button_label": "写公文",
+    "projects_nav_label": "我的公文",
+    "quick_starts": ["工作通知", "情况报告", "会议纪要"],
+    "stages": [
+      { "id": "requirements", "label": "需求梳理", "description": "确认文种与要求" },
+      { "id": "outline", "label": "提纲设计", "description": "组织公文结构" },
+      { "id": "generating", "label": "生成公文", "description": "实时生成任务" },
+      { "id": "preview", "label": "预览下载", "description": "查看与下载文档" }
+    ],
+    "outline": {
+      "item_label": "部分",
+      "generator_prompt_key": "gongwen",
+      "fields": [
+        { "name": "title", "label": "部分标题", "required": true, "max_length": 160 },
+        { "name": "purpose", "label": "本部分作用", "required": false, "max_length": 500 },
+        { "name": "content", "label": "内容要点", "required": false, "max_length": 4000 },
+        { "name": "kind", "label": "体例要素", "required": false, "max_length": 64, "default": "正文" },
+        { "name": "notes", "label": "口径备注", "required": false, "max_length": 2000 }
+      ],
+      "first_item_is_title_page": true
+    },
+    "preview_kinds": ["png"]
+  }
+}

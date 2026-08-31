@@ -1,0 +1,92 @@
+export type User = { id: string; username: string; display_name: string; role: string; is_active: boolean; deletion_pending: boolean };
+export type ProviderModel = { id: string; model_id: string; display_name: string; is_active: boolean; is_default: boolean; is_verified: boolean; last_tested_at: string | null; last_test_error: string | null };
+export type Provider = { id: string; slug: string; display_name: string; base_url: string; api_key_hint: string; is_active: boolean; models: ProviderModel[] };
+export type Project = { id: string; title: string; skill_id: string; created_at: string; updated_at: string };
+export type SkillStage = { id: string; label: string; description: string };
+export type SkillOutlineField = { name: string; label: string; required: boolean; max_length: number | null; default: string };
+export type SkillFrontend = {
+  hero_title: string;
+  hero_subtitle: string;
+  composer_placeholder: string;
+  create_button_label: string;
+  projects_nav_label: string;
+  quick_starts: string[];
+  stages: SkillStage[];
+  preview_kinds: string[];
+  outline: { item_label: string; generator_prompt_key: string | null; fields: SkillOutlineField[]; first_item_is_title_page: boolean };
+};
+export type Skill = {
+  id: string;
+  display_name: string;
+  description: string;
+  icon: string;
+  enabled: boolean;
+  primary_artifact_kind: string;
+  features: { templates: boolean; page_refinement: boolean; editor: boolean; materials_upload: boolean; resume: boolean };
+  frontend: SkillFrontend;
+};
+export type ProjectMaterial = { id: string; original_filename: string; content_type: string; size_bytes: number; status: "processing" | "ready" | "failed"; metadata: Record<string, unknown>; error: string | null; created_at: string; updated_at: string };
+export type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
+export type Job = {
+  id: string;
+  project_id: string;
+  base_job_id: string | null;
+  resumed_by_job_id: string | null;
+  skill_id: string;
+  target_slide_number: number | null;
+  template_id: string | null;
+  template_name: string | null;
+  status: JobStatus;
+  prompt: string;
+  error: string | null;
+  cancellation_requested: boolean;
+  created_at: string;
+};
+export type Template = {
+  id: string;
+  name: string;
+  original_filename: string;
+  status: "analyzing" | "ready" | "failed";
+  page_count: number | null;
+  metadata: Record<string, unknown>;
+  error: string | null;
+  created_at: string;
+  updated_at: string;
+  scope: "user" | "system";
+  is_active: boolean;
+  sort_order: number;
+};
+export type TemplateProgress = { stage?: string; message?: string; logs?: string[]; updated_at?: string };
+export type PromptSnippet = {
+  id: string;
+  name: string;
+  content: string;
+  category: string;
+  used_count: number;
+  scope: "user" | "system";
+  is_active: boolean;
+  sort_order: number;
+  preset: PromptPreset;
+};
+export type PromptPreset = {
+  requirements?: {
+    scenario?: string;
+    audience?: string;
+    page_range?: string;
+    style?: string;
+    objective?: string;
+  };
+  outline?: PromptPresetSlide[];
+  notes_enabled?: boolean;
+};
+export type PromptPresetSlide = {
+  title: string;
+  purpose: string;
+  content: string;
+  kind: string;
+  notes: string;
+};
+export type Artifact = { id: string; kind: "svg" | "pptx" | "report" | "docx"; filename: string; size_bytes: number; created_at: string };
+export type JobEvent = { id: number; event_type: string; payload: Record<string, unknown>; created_at: string };
+export type NavKey = "projects" | "templates" | "prompts" | "admin";
+export type ModalState = "project-delete" | "template-rename" | "template-delete" | "prompt-editor" | "prompt-delete" | null;

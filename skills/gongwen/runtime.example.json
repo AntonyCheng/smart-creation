@@ -1,0 +1,6 @@
+{
+  "delivery_mode": "local",
+  "output_root": "",
+  "agent_id": "",
+  "api_path_prefix": "workspace/drafts"
+}

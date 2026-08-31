@@ -1,0 +1,58 @@
+FROM ghcr.io/anomalyco/opencode:1.18.18@sha256:f3e00f8e25500150373c817e24b13f2f08e2ccd4cafd53dc3ad4827d47863b6f AS opencode
+
+FROM python:3.12-slim
+
+# Keep the pip mirror in sync with the web image (defaults to Aliyun).
+ARG PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple
+ARG APT_MIRROR=https://mirrors.aliyun.com/debian
+
+# PYTHONPATH: the celery console script does not put the working directory on
+# sys.path, so pin it for api/runner/skills resolution. HOME is where the
+# generated OpenCode provider config lands for the agent subprocesses.
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PATH=/opt/venv/bin:$PATH \
+    PYTHONPATH=/app/webapp \
+    HOME=/home/pptmaster
+
+# This image is the long-lived agent runtime: skills, OpenCode, fonts, and a
+# document renderer run directly in it as bounded subprocesses per job.
+WORKDIR /app/webapp
+RUN sed -i "s|http://deb.debian.org/debian|${APT_MIRROR}|g" /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
+    && apt-get install -y --no-install-recommends \
+        bash build-essential ca-certificates curl fd-find ffmpeg findutils fontconfig \
+        fonts-dejavu-core fonts-noto-cjk fonts-noto-color-emoji git jq libstdc++6 \
+        libreoffice-writer openssh-client pandoc pkg-config poppler-utils procps psmisc \
+        ripgrep tini unzip xz-utils zip \
+    && rm -rf /var/lib/apt/lists/* \
+    && python -m venv /opt/venv \
+    && ln -s /usr/bin/fdfind /usr/local/bin/fd \
+    && useradd --create-home --uid 10003 pptmaster
+
+# The official image ships a musl-linked executable. Carry its small runtime
+# closure into Debian rather than relying on incompatible system libraries.
+COPY --from=opencode /lib/ld-musl-x86_64.so.1 /lib/ld-musl-x86_64.so.1
+COPY --from=opencode /usr/lib/libstdc++.so.6 /usr/lib/libstdc++.so.6
+COPY --from=opencode /usr/lib/libgcc_s.so.1 /usr/lib/libgcc_s.so.1
+COPY --from=opencode /usr/local/bin/opencode /usr/local/bin/opencode
+RUN opencode --version
+
+COPY webapp/requirements.txt /tmp/webapp-requirements.txt
+COPY docker/worker-requirements.txt /tmp/worker-requirements.txt
+RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/webapp-requirements.txt \
+    && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/worker-requirements.txt
+
+# Agent-facing content lives at the same /app paths the skills expect.
+COPY AGENTS.md /app/AGENTS.md
+COPY docker/agent/docs /app/docs
+COPY skills /app/skills
+
+COPY webapp/api ./api
+COPY webapp/runner ./runner
+COPY webapp/worker ./worker
+COPY webapp/skills ./skills
+COPY webapp/migrations ./migrations
+COPY webapp/alembic.ini ./alembic.ini
+
+CMD ["celery", "-A", "runner.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]

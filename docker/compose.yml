@@ -1,0 +1,152 @@
+name: pptmaster
+
+services:
+  pptmaster-postgres:
+    image: postgres:17.6-bookworm
+    container_name: pptmaster-postgres
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-pptmaster}
+      POSTGRES_USER: ${POSTGRES_USER:-pptmaster}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in docker/.env}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - ./data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks: [pptmaster-network]
+
+  pptmaster-redis:
+    image: redis:7-alpine
+    container_name: pptmaster-redis
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - ./data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+    networks: [pptmaster-network]
+
+  pptmaster-api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.web
+      args:
+        PIP_INDEX_URL: ${PPTMASTER_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    image: pptmaster-web:local
+    container_name: pptmaster-api
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pptmaster}:${POSTGRES_PASSWORD}@pptmaster-postgres:5432/${POSTGRES_DB:-pptmaster}
+      REDIS_URL: redis://pptmaster-redis:6379/0
+      WORKSPACE_ROOT: /srv/projects
+      PPTMASTER_CONFIG_ENCRYPTION_KEY: ${PPTMASTER_CONFIG_ENCRYPTION_KEY:-}
+      ADMIN_USERNAME: ${ADMIN_USERNAME:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
+    # Run as the host user that owns ./data/projects so the API can create
+    # per-user workspace directories on the bind mount.
+    user: "${PPTMASTER_WORKER_UID:-1001}:${PPTMASTER_WORKER_GID:-1001}"
+    volumes:
+      - ./data/projects:/srv/projects
+    depends_on:
+      pptmaster-postgres:
+        condition: service_healthy
+      pptmaster-redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health')"]
+      start_period: 60s
+      interval: 15s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+    networks: [pptmaster-network]
+
+  pptmaster-runner:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.runner
+      args:
+        PIP_INDEX_URL: ${PPTMASTER_PIP_INDEX_URL:-https://mirrors.aliyun.com/pypi/simple}
+    image: pptmaster-runner:local
+    container_name: pptmaster-runner
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-pptmaster}:${POSTGRES_PASSWORD}@pptmaster-postgres:5432/${POSTGRES_DB:-pptmaster}
+      REDIS_URL: redis://pptmaster-redis:6379/0
+      WORKSPACE_ROOT: /srv/projects
+      WORKER_UID: ${PPTMASTER_WORKER_UID:-10003}
+      WORKER_GID: ${PPTMASTER_WORKER_GID:-10003}
+      # The API container runs as PPTMASTER_WORKER_UID on this host; keep the
+      # runner's editor-workspace chown target aligned with it.
+      PPTMASTER_WEB_UID: ${PPTMASTER_WORKER_UID:-1001}
+      OPENCODE_IDLE_TIMEOUT_SECONDS: ${PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS:-600}
+      PPTMASTER_CONFIG_ENCRYPTION_KEY: ${PPTMASTER_CONFIG_ENCRYPTION_KEY:-}
+    volumes:
+      - ./data/projects:/srv/projects
+      # Optional static OpenCode config fallback for the agent subprocesses.
+      - ./opencode:/opt/pptmaster/opencode-config:ro
+    depends_on:
+      pptmaster-postgres:
+        condition: service_healthy
+      pptmaster-redis:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [pptmaster-network]
+
+  # MCP remains a separate application, but Compose owns its lifecycle and
+  # connects it to the private API network rather than the host loopback.
+  pptmaster-mcp:
+    build:
+      context: ../mcp-server
+      dockerfile: Dockerfile
+    image: pptmaster-mcp:local
+    container_name: pptmaster-mcp
+    env_file:
+      - path: ../mcp-server/.env
+        required: true
+    environment:
+      PPTMASTER_API_URL: http://pptmaster-api:8000
+    ports:
+      - ${PPTMASTER_MCP_PORT:-8010}:7010
+    volumes:
+      - ./data/mcp-artifacts:/app/artifacts
+    depends_on:
+      pptmaster-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [pptmaster-network]
+
+  pptmaster-caddy:
+    image: caddy:2.8.4-alpine
+    container_name: pptmaster-caddy
+    environment:
+      PPTMASTER_SITE_ADDRESS: ${PPTMASTER_SITE_ADDRESS:-:80}
+    ports:
+      - ${PPTMASTER_HTTP_PORT:-8080}:80
+      - ${PPTMASTER_HTTPS_PORT:-8443}:443
+    volumes:
+      - ./caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./data/caddy:/data
+      - ./data/caddy-config:/config
+    depends_on:
+      pptmaster-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [pptmaster-network]
+
+networks:
+  pptmaster-network:
+    name: pptmaster-network
+    driver: bridge

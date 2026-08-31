@@ -1,0 +1,111 @@
+import { ReactElement, useState } from "react";
+import Select from "antd/es/select";
+import { AssetEmptyState, AsyncButton, ConfirmAction, PrimaryButton, UploadButton } from "./ui";
+import { ArrowLeft, Check, ChevronDown, ChevronLeft, ChevronRight, Copy, Download, Edit3, Eye, FileStack, LayoutGrid, LayoutTemplate, ListFilter, LoaderCircle, Pencil, Plus, Search, Send, Sparkles, Square, Trash2, Upload, WandSparkles, X, Zap } from "lucide-react";
+import type { Artifact, Job, JobEvent, JobStatus, PromptSnippet, Project, Template } from "./appTypes";
+import { editorPath, navigate } from "./routes";
+
+const statusLabel: Record<JobStatus, string> = { queued: "等待执行", running: "生成中", succeeded: "已完成", failed: "生成失败", cancelled: "已中止" };
+const workbenchStages = ["需求梳理", "大纲设计", "选择模板", "生成 PPT", "预览精修"];
+
+function formatDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "刚刚";
+  return new Intl.DateTimeFormat("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" }).format(date);
+}
+
+function artifactUrl(jobId: string, artifactId: string): string {
+  return `/api/v1/projects/${jobId.split(":")[0]}/jobs/${jobId.split(":")[1]}/artifacts/${artifactId}/download`;
+}
+
+function templatePreviewFiles(template: Template): string[] {
+  const value = template.metadata.preview_files;
+  const files = Array.isArray(value) ? value.map(String).filter(Boolean) : [];
+  const slideFiles = files.filter((file) => /(?:^|\/)\d{3}_.*\.svg$/i.test(file));
+  return slideFiles.length > 0 ? slideFiles : files;
+}
+
+function templateFileUrl(templateId: string, filePath: string): string {
+  const encodedPath = filePath.split("/").map((part) => encodeURIComponent(part)).join("/");
+  return `/api/v1/templates/${templateId}/files/${encodedPath}`;
+}
+
+function templateMetadataList(value: unknown): string[] {
+  const values = Array.isArray(value) ? value : value && typeof value === "object" ? Object.values(value) : [];
+  return values.map((item) => typeof item === "string" ? item : JSON.stringify(item)).filter(Boolean).slice(0, 12);
+}
+
+function templateStatusText(template: Template): string {
+  if (template.status === "analyzing") return "正在解析模板内容";
+  if (template.status === "failed") return template.error || "模板解析失败";
+  return template.is_active ? "已启用，可用于新建 PPT" : "已停用，暂不可使用";
+}
+
+function TemplatePreviewModal(props: { template: Template; onClose: () => void; onUse: (template: Template) => void }): ReactElement {
+  const files = templatePreviewFiles(props.template);
+  const [index, setIndex] = useState(0);
+  const currentFile = files[index] || files[0] || "";
+  const colors = templateMetadataList(props.template.metadata.colors).map((color) => color.startsWith("#") ? color : `#${color}`).filter((color) => /^#[0-9a-f]{6}$/i.test(color));
+  const fonts = templateMetadataList(props.template.metadata.fonts);
+  const canUse = props.template.status === "ready" && props.template.is_active;
+  function useTemplate(): void {
+    if (!canUse) return;
+    props.onUse(props.template);
+    props.onClose();
+  }
+  return <div className="kppt-template-detail-backdrop" role="presentation" onMouseDown={props.onClose}>
+    <section className="kppt-template-detail-modal" role="dialog" aria-modal="true" aria-label={`${props.template.name}模板详情`} onMouseDown={(event) => event.stopPropagation()}>
+      <header>
+        <div><span>{props.template.scope === "system" ? "系统模板详情" : "我的模板详情"}</span><h2>{props.template.name}</h2><p>{props.template.original_filename}</p></div>
+        <button className="zc-icon" type="button" aria-label="关闭模板详情" title="关闭" onClick={props.onClose}><X size={18} /></button>
+      </header>
+      <div className="kppt-template-detail-body">
+        <aside className="kppt-template-detail-thumbs"><strong>页面预览 <small>{files.length || props.template.page_count || 0} 页</small></strong>{files.length ? files.map((file, fileIndex) => <button className={index === fileIndex ? "is-active" : ""} type="button" key={file} onClick={() => setIndex(fileIndex)}><img src={templateFileUrl(props.template.id, file)} alt={`第 ${fileIndex + 1} 页`} /><span>{fileIndex + 1}</span></button>) : <p>{templateStatusText(props.template)}</p>}</aside>
+        <main className="kppt-template-detail-canvas">{currentFile ? <img src={templateFileUrl(props.template.id, currentFile)} alt={`${props.template.name}第 ${index + 1} 页`} /> : <div><LayoutTemplate size={32} /><strong>{templateStatusText(props.template)}</strong></div>}</main>
+        <aside className="kppt-template-detail-summary"><section><span>解析状态</span><strong className={`kppt-template-detail-state kppt-template-detail-state-${props.template.status}`}>{props.template.status === "ready" ? (props.template.is_active ? "已启用" : "已停用") : props.template.status === "analyzing" ? "解析中" : "解析失败"}</strong></section><section><span>页面数量</span><strong>{props.template.page_count || files.length || 0} 页</strong></section><section><span>最近更新</span><strong>{formatDate(props.template.updated_at)}</strong></section>{colors.length > 0 && <section><span>主要配色</span><div className="kppt-template-color-list">{colors.map((color) => <i key={color} title={color} style={{ backgroundColor: color }} />)}</div></section>}{fonts.length > 0 && <section><span>字体</span><p>{fonts.join("、")}</p></section>}<section><span>源文件</span><p>{props.template.original_filename}</p></section></aside>
+      </div>
+      <footer className="kppt-template-detail-footer"><span>{files.length > 1 ? `第 ${index + 1} / ${files.length} 页` : files.length === 1 ? "共 1 页" : templateStatusText(props.template)}</span><div><button className="zc-icon" type="button" aria-label="上一页" title="上一页" disabled={index === 0 || files.length < 2} onClick={() => setIndex((current) => Math.max(0, current - 1))}><ChevronLeft size={17} /></button><button className="zc-icon" type="button" aria-label="下一页" title="下一页" disabled={index >= files.length - 1 || files.length < 2} onClick={() => setIndex((current) => Math.min(files.length - 1, current + 1))}><ChevronRight size={17} /></button><button className="zc-secondary" type="button" onClick={props.onClose}>关闭</button><PrimaryButton className="zc-primary" disabled={!canUse} onClick={useTemplate}><LayoutTemplate size={15} />使用此模板</PrimaryButton></div></footer>
+    </section>
+  </div>;
+}
+
+export function TemplatesPage(props: { templates: Template[]; query: string; setQuery: (value: string) => void; uploading: boolean; notice: string; onUpload: (file: File) => void | Promise<void>; onUse: (template: Template) => void; onRename: (template: Template) => void; onDelete: (template: Template) => void; onRetry: (template: Template) => Promise<void>; retryingTemplateId?: string | null }) {
+  const [tab, setTab] = useState<"system" | "mine">("system");
+  const [category, setCategory] = useState("全部场景");
+  const [previewTemplate, setPreviewTemplate] = useState<Template | null>(null);
+  const categories = Array.from(new Set(props.templates.map((template) => template.metadata.category ? String(template.metadata.category) : "商务汇报")));
+  const visible = props.templates.filter((template) => {
+    const matchesOwner = tab === "system" ? template.scope === "system" : template.scope !== "system";
+    const matchesQuery = template.name.toLowerCase().includes(props.query.toLowerCase());
+    const templateCategory = template.metadata.category ? String(template.metadata.category) : "商务汇报";
+    return matchesOwner && matchesQuery && (category === "全部场景" || templateCategory === category);
+  });
+  const noMatch = Boolean(props.query.trim()) || category !== "全部场景";
+  const emptyTemplateTitle = noMatch ? "没有找到匹配的模板" : tab === "system" ? "暂无系统模板" : "暂无个人模板";
+  const emptyTemplateDescription = noMatch ? "尝试更换搜索条件。" : tab === "system" ? "管理员发布系统模板后，会在这里提供给所有用户使用。" : "上传一个 PPTX，建立你的个人模板资产。";
+  const card = (template: Template) => {
+    const files = templatePreviewFiles(template);
+    const canUse = template.status === "ready" && template.is_active;
+    return <article className="zc-template-card" key={template.id}><button className="zc-template-preview" type="button" aria-label={`查看模板 ${template.name}`} onClick={() => setPreviewTemplate(template)}>{files[0] ? <img src={templateFileUrl(template.id, files[0])} alt={`${template.name}预览`} /> : <LayoutTemplate size={30} />}<span>{template.scope === "system" ? "系统模板" : template.status === "ready" ? "用于新建 PPT" : template.status === "analyzing" ? "正在分析" : "解析失败"}</span></button><div><strong>{template.name}</strong><small>{template.page_count ? `${template.page_count} 页模板` : "正在读取页面信息"}</small></div><footer><button type="button" onClick={() => setPreviewTemplate(template)}><Eye size={14} />查看详情</button>{canUse && <button type="button" onClick={() => props.onUse(template)}><LayoutTemplate size={14} />使用模板</button>}{template.scope !== "system" && (template.status === "failed" ? <AsyncButton type="button" loading={props.retryingTemplateId === template.id} disabled={Boolean(props.retryingTemplateId)} onClick={() => void props.onRetry(template)}>重新分析</AsyncButton> : <button type="button" onClick={() => props.onRename(template)}><Edit3 size={14} />重命名</button>)}{template.scope !== "system" && <button className="is-danger" type="button" onClick={() => props.onDelete(template)}><Trash2 size={14} />删除</button>}</footer>{template.error && <p className="zc-template-error">{template.error}</p>}</article>;
+  };
+ return <section className="zc-asset-page kppt-asset-page"><header className="zc-asset-head"><div><div className="zc-eyebrow">设计资产</div><h1>模板库</h1><p>选择平台模板，或上传团队已有的 PPTX 作为生成风格。</p></div><UploadButton className="zc-upload" icon={<Upload size={16} />} loading={props.uploading} disabled={props.uploading} accept=".pptx" onFiles={(files) => { const file = files[0]; if (file) void props.onUpload(file); }}>{props.uploading ? "正在上传…" : "上传模板"}</UploadButton></header><div className="kppt-asset-tabs"><div className="kppt-tab-list" role="tablist"><button type="button" className={tab === "system" ? "is-active" : ""} onClick={() => setTab("system")}>系统模板 <span>{props.templates.filter((template) => template.scope === "system").length}</span></button><button type="button" className={tab === "mine" ? "is-active" : ""} onClick={() => setTab("mine")}>我的模板 <span>{props.templates.filter((template) => template.scope !== "system").length}</span></button></div><div className="kppt-asset-tools"><label className="kppt-compact-search"><Search size={15} /><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="搜索模板或标签" /></label><Select className="kppt-category-select" popupClassName="kppt-category-select-dropdown" value={category} onChange={setCategory} prefix={<ListFilter size={15} />} options={[{ value: "全部场景", label: "全部场景" }, ...categories.map((item) => ({ value: item, label: item }))]} aria-label="筛选模板场景" /><button className="kppt-tool-button" type="button" aria-label="网格视图"><LayoutGrid size={16} /></button></div></div>{visible.length === 0 ? <AssetEmptyState className="kppt-asset-empty-state" title={emptyTemplateTitle} description={emptyTemplateDescription} /> : <div className="zc-template-grid kppt-template-grid">{tab === "mine" && <UploadButton type="default" className="zc-template-upload kppt-upload-template" icon={<Plus size={22} />} accept=".pptx" loading={props.uploading} disabled={props.uploading} onFiles={(files) => { const file = files[0]; if (file) void props.onUpload(file); }}><strong>上传新模板</strong><span>支持 .pptx，建议使用 16:9 页面</span></UploadButton>}{visible.map(card)}</div>}{previewTemplate && <TemplatePreviewModal template={previewTemplate} onClose={() => setPreviewTemplate(null)} onUse={props.onUse} />}</section>;
+}
+
+export function PromptsPage(props: { snippets: PromptSnippet[]; query: string; setQuery: (value: string) => void; notice: string; onUse: (snippet: PromptSnippet) => void; onCreate: () => void; onEdit: (snippet: PromptSnippet) => void; onDelete: (snippet: PromptSnippet) => void }) {
+  const query = props.query.trim().toLowerCase();
+  const visible = props.snippets.filter((snippet) => !query || `${snippet.name}${snippet.content}${snippet.preset?.requirements?.objective || ""}`.toLowerCase().includes(query));
+  const renderCard = (snippet: PromptSnippet) => <article className="zc-prompt-card" key={snippet.id}><header><span><Zap size={15} /></span><small>{snippet.scope === "system" ? "系统预设" : snippet.category}</small><button type="button" onClick={() => props.onUse(snippet)}><WandSparkles size={14} />在首页使用</button></header><h3>{snippet.name}</h3><p>{snippet.preset?.requirements?.objective || snippet.content || "未配置默认要求"}</p><footer><span>已使用 {snippet.used_count} 次</span><div><button type="button" aria-label="复制预设说明" onClick={() => void navigator.clipboard?.writeText(snippet.content)}><Copy size={15} /></button>{snippet.scope !== "system" && <><button type="button" aria-label="编辑创作预设" onClick={() => props.onEdit(snippet)}><Edit3 size={15} /></button><button type="button" aria-label="删除创作预设" onClick={() => props.onDelete(snippet)}><Trash2 size={15} /></button></>}</div></footer></article>;
+  const systemSnippets = visible.filter((snippet) => snippet.scope === "system");
+  const personalSnippets = visible.filter((snippet) => snippet.scope !== "system");
+  const personalCount = props.snippets.filter((snippet) => snippet.scope !== "system").length;
+  const noMatch = Boolean(query);
+  return <section className="zc-asset-page kppt-asset-page prompt-page"><header className="zc-asset-head"><div><div className="zc-eyebrow">个人效率资产</div><h1>创作预设</h1><p>把常用需求和页面结构保存为预设，在首页选择后直接填入创作流程。</p></div><button className="zc-primary" type="button" onClick={props.onCreate}><Plus size={16} />新建预设</button></header><div className="zc-prompt-summary"><span><Sparkles size={20} /></span><div><strong>让每一次创作更快开始</strong><small>已保存 {personalCount} 条个人预设，本月累计使用 {props.snippets.reduce((total, item) => total + item.used_count, 0)} 次</small></div><label><Search size={16} /><input value={props.query} onChange={(event) => props.setQuery(event.target.value)} placeholder="搜索创作预设" /></label></div><h2 className="zc-library-heading">系统提示词预设</h2>{systemSnippets.length > 0 ? <div className="zc-prompt-grid kppt-prompt-grid">{systemSnippets.map(renderCard)}</div> : <AssetEmptyState title={noMatch ? "未找到匹配的系统预设" : "暂无系统提示词预设"} description={noMatch ? "请尝试其他关键词。" : "管理员发布系统预设后，会在这里提供给所有用户使用。"} />}<h2 className="zc-library-heading">我的预设</h2>{personalSnippets.length > 0 ? <div className="zc-prompt-grid kppt-prompt-grid">{personalSnippets.map(renderCard)}</div> : <AssetEmptyState title={noMatch ? "未找到匹配的个人预设" : "暂无个人预设"} description={noMatch ? "请尝试其他关键词。" : "点击右上角“新建预设”，保存你的常用需求和页面结构。"} />}</section>;
+}
+
+export function ProjectWorkbench(props: { project: Project; job: Job | null; workingJob: Job | null; draft: string; setDraft: (value: string) => void; templates: Template[]; selectedTemplateId: string | null; setSelectedTemplateId: (value: string | null) => void; artifacts: Artifact[]; events: JobEvent[]; showLogs: boolean; setShowLogs: (value: boolean) => void; previewSlides: Artifact[]; latestPptx: Artifact | null; previewIndex: number | null; setPreviewIndex: (value: number | null) => void; isSubmitting: boolean; notice: string; onBack: () => void; onGenerate: () => void; onCancel: () => void | Promise<void>; onUseSnippet: (snippet: PromptSnippet) => void; snippets: PromptSnippet[] }) {
+  const job = props.job;
+  const stageIndex: number = job?.status === "succeeded" ? 4 : props.workingJob ? 3 : props.selectedTemplateId ? 2 : 0;
+  const projectJobRef = `${props.project.id}:${job?.id ?? ""}`;
+  const previewArtifact = props.previewIndex === null ? null : props.previewSlides[props.previewIndex];
+  return <section className="zc-workbench"><header className="zc-workbench-head"><button className="zc-icon" type="button" aria-label="返回项目" onClick={props.onBack}><ArrowLeft size={19} /></button><div><strong>{props.project.title}</strong><span>{job?.template_name ? `使用模板：${job.template_name}` : "自由创作"}</span></div><span className={`zc-status zc-status-${job?.status ?? "draft"}`}>{job ? statusLabel[job.status] : "需求草稿"}</span></header><div className="zc-stage-bar">{workbenchStages.map((stage, index) => <div className={index <= stageIndex ? "is-active" : ""} key={stage}><i>{index < stageIndex ? <Check size={13} /> : index + 1}</i><span>{stage}</span></div>)}</div>{stageIndex < 3 && <div className="zc-workbench-body"><aside><strong>创作流程</strong><button className={stageIndex === 0 ? "is-current" : ""} type="button">需求梳理</button><button className={stageIndex === 1 ? "is-current" : ""} type="button">大纲设计</button><button className={stageIndex === 2 ? "is-current" : ""} type="button">选择模板</button></aside><main><div className="zc-panel"><div className="zc-panel-head"><div><h2>{stageIndex === 2 ? "为这份演示文稿选择模板" : "梳理你的创作需求"}</h2><p>{stageIndex === 2 ? "模板会固定在本次生成任务中，后续可继续基于结果精修。" : "输入主题、对象、页数和表达风格。你可以随时回到这里补充信息。"}</p></div></div>{stageIndex === 2 ? <div className="zc-workbench-template-grid"><button className={!props.selectedTemplateId ? "is-selected" : ""} type="button" onClick={() => props.setSelectedTemplateId(null)}><LayoutTemplate size={20} /><strong>自由创作</strong><span>不使用个人模板</span></button>{props.templates.map((template) => <button className={props.selectedTemplateId === template.id ? "is-selected" : ""} type="button" key={template.id} onClick={() => props.setSelectedTemplateId(template.id)}><LayoutTemplate size={20} /><strong>{template.name}</strong><span>{template.page_count ?? 0} 页模板</span></button>)}</div> : <><label className="zc-brief-field"><span>演示需求</span><textarea value={props.draft} onChange={(event) => props.setDraft(event.target.value)} rows={9} placeholder="描述希望生成的 PPT" /></label><div className="zc-quick-prompts">{props.snippets.slice(0, 4).map((snippet) => <button type="button" key={snippet.id} onClick={() => void props.onUseSnippet(snippet)}><Zap size={14} />{snippet.name}</button>)}</div></>}<footer className="zc-panel-actions"><button className="zc-secondary" type="button" onClick={() => props.setSelectedTemplateId(props.selectedTemplateId || null)}>{stageIndex === 0 ? "继续完善大纲" : "返回修改需求"}</button><button className="zc-primary" type="button" onClick={props.onGenerate} disabled={!props.draft.trim() || props.isSubmitting}>{props.isSubmitting ? <LoaderCircle className="zc-spin" size={16} /> : <Sparkles size={16} />}{stageIndex === 2 ? "开始生成 PPT" : "确认并开始生成"}</button></footer></div></main></div>}{stageIndex === 3 && <div className="zc-generating"><span><LoaderCircle className="zc-spin" size={28} /></span><h2>{job?.status === "queued" ? "正在准备生成任务" : "正在生成演示文稿"}</h2><p>你可以离开当前页面，任务会继续在后台执行。</p><div className="zc-generation-steps"><span>准备工作区</span><span>应用视觉规范</span><span>逐页生成内容</span><span>质量检查与导出</span></div><ConfirmAction title="确认中止当前生成任务？" description="生成任务会停止，现有 PPT 不会被覆盖；已生成页面会保留，并可在任务结束后继续。" disabled={Boolean(job?.cancellation_requested)} onConfirm={props.onCancel}><button className="zc-danger" type="button" onClick={() => undefined} disabled={job?.cancellation_requested}><Square size={15} />{job?.cancellation_requested ? "正在中止" : "中止任务"}</button></ConfirmAction><button className="zc-log-toggle" type="button" onClick={() => props.setShowLogs(!props.showLogs)}>{props.showLogs ? "收起执行记录" : "查看执行记录"}<ChevronDown size={16} /></button>{props.showLogs && <div className="zc-log-panel">{props.events.map((event) => <p key={event.id}>{String(event.payload.message || event.payload.text || event.event_type)}</p>)}</div>}</div>}{stageIndex === 4 && <div className="zc-preview-workspace"><aside className="zc-slide-list"><strong>页面预览</strong>{props.previewSlides.map((slide, index) => <button className={props.previewIndex === index ? "is-active" : ""} type="button" key={slide.id} onClick={() => props.setPreviewIndex(index)}><img src={artifactUrl(projectJobRef, slide.id)} alt={`第 ${index + 1} 页`} /><span>{index + 1}</span></button>)}</aside><main className="zc-preview-main">{previewArtifact ? <img src={artifactUrl(projectJobRef, previewArtifact.id)} alt={`第 ${(props.previewIndex ?? 0) + 1} 页预览`} /> : <div className="zc-preview-placeholder"><FileStack size={35} /><strong>选择一页查看详情</strong></div>}</main><aside className="zc-preview-actions"><h2>预览精修</h2><p>可以继续描述希望修改的内容，系统会基于当前版本生成新的演示文稿。</p>{props.latestPptx && <a className="zc-primary" href={artifactUrl(projectJobRef, props.latestPptx.id)} download><Download size={16} />下载演示文稿</a>}<a className="zc-secondary" href={editorPath(props.project.id, job?.id ?? "")} onClick={(event) => { event.preventDefault(); navigate(editorPath(props.project.id, job?.id ?? "")); }}><Pencil size={16} />手动编辑</a><label><span>继续修改</span><textarea value={props.draft} onChange={(event) => props.setDraft(event.target.value)} rows={5} placeholder="例如：把封面改得更简洁" /></label><button className="zc-primary" type="button" onClick={props.onGenerate} disabled={!props.draft.trim() || props.isSubmitting}><Send size={16} />提交修改</button></aside></div>}</section>;
+}
