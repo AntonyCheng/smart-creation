@@ -67,6 +67,9 @@ class ProjectCreateIn(BaseModel):
     skill_id: str = Field(
         default="ppt-master", max_length=64, pattern=r"^[a-z0-9][a-z0-9-]*$"
     )
+    # Creation mode for skills that expose several flows (draft/typeset…);
+    # validated against the skill manifest and then frozen on the project.
+    mode: str | None = Field(default=None, max_length=32, pattern=r"^[a-z0-9][a-z0-9-]*$")
     prompt_snippet_id: UUID | None = None
 
 
@@ -74,6 +77,7 @@ class ProjectOut(BaseModel):
     id: UUID
     title: str
     skill_id: str
+    mode: str | None = None
     created_at: datetime
     updated_at: datetime
 
@@ -146,9 +150,13 @@ class PageRefinementMessageOut(BaseModel):
 
 
 class PageRefinementIntentIn(BaseModel):
-    """Classify one page-scoped chat message before creating a PPT job."""
+    """Classify one chat message before creating a refinement job.
 
-    slide_number: int = Field(ge=1, le=999)
+    ``slide_number`` follows the creation scope: 1..999 targets one PPT page,
+    while 0 is the document-wide conversation for document-refinement skills.
+    """
+
+    slide_number: int = Field(ge=0, le=999)
     slide_title: str = Field(default="当前页面", min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=4_000)
     client_message_id: str | None = Field(default=None, min_length=8, max_length=64)
@@ -250,6 +258,7 @@ class JobOut(BaseModel):
     base_job_id: UUID | None
     resumed_by_job_id: UUID | None
     skill_id: str
+    mode: str | None = None
     target_slide_number: int | None
     template_id: UUID | None
     template_name: str | None
@@ -405,9 +414,44 @@ class SkillOutlineOut(BaseModel):
     first_item_is_title_page: bool = False
 
 
+class SkillModeFieldOut(BaseModel):
+    """One form field of a creation mode's pre-generation panel."""
+
+    name: str
+    label: str
+    type: str = "text"
+    required: bool = False
+    max_length: int | None = None
+    default: str = ""
+    placeholder: str = ""
+    options: list[str] = Field(default_factory=list)
+    wide: bool = False
+
+
+class SkillModeOut(BaseModel):
+    """One creation flow (draft/typeset…) with its own stages and form."""
+
+    id: str
+    label: str
+    description: str = ""
+    stages: list[SkillStageOut] = Field(default_factory=list)
+    fields: list[SkillModeFieldOut] = Field(default_factory=list)
+
+
+class SkillRefinementOut(BaseModel):
+    """Chat-refinement labels; ``scope`` is page (PPT) or document (公文)."""
+
+    scope: str = "page"
+    assistant_name: str = "AI 页面助手"
+    scope_label: str = "当前页"
+    context_hint: str = "只会修改当前页，其他页面保持不变。"
+    empty_hint: str = "告诉我想如何修改当前页…"
+
+
 class SkillFeaturesOut(BaseModel):
     templates: bool = False
     page_refinement: bool = False
+    document_refinement: bool = False
     editor: bool = False
     materials_upload: bool = True
     resume: bool = True
@@ -421,6 +465,8 @@ class SkillFrontendOut(BaseModel):
     projects_nav_label: str = ""
     quick_starts: list[str] = Field(default_factory=list)
     stages: list[SkillStageOut] = Field(default_factory=list)
+    modes: list[SkillModeOut] = Field(default_factory=list)
+    refinement: SkillRefinementOut = Field(default_factory=SkillRefinementOut)
     outline: SkillOutlineOut = Field(default_factory=SkillOutlineOut)
     preview_kinds: list[str] = Field(default_factory=lambda: ["svg"])
 

@@ -197,6 +197,7 @@ export function ProductApp() {
   const [projects, setProjects] = useState<Project[]>([]);
   const [skills, setSkills] = useState<Skill[]>([]);
   const [draftSkillId, setDraftSkillId] = useState("ppt-master");
+  const [draftModeId, setDraftModeId] = useState("");
   const [jobsByProject, setJobsByProject] = useState<Record<string, Job[]>>({});
   const [materialsByProject, setMaterialsByProject] = useState<Record<string, ProjectMaterial[]>>({});
   const [pendingMaterialFiles, setPendingMaterialFiles] = useState<File[]>([]);
@@ -399,8 +400,8 @@ export function ProductApp() {
     }
   }
 
-  async function createProject(title: string, promptSnippetId?: string | null, skillId?: string): Promise<Project> {
-    const project = await request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ title, skill_id: skillId || "ppt-master", prompt_snippet_id: promptSnippetId || null }) });
+  async function createProject(title: string, promptSnippetId?: string | null, skillId?: string, mode?: string | null): Promise<Project> {
+    const project = await request<Project>("/api/v1/projects", { method: "POST", body: JSON.stringify({ title, skill_id: skillId || "ppt-master", mode: mode || null, prompt_snippet_id: promptSnippetId || null }) });
     setProjects((current) => [project, ...current]);
     setJobsByProject((current) => ({ ...current, [project.id]: [] }));
     setMaterialsByProject((current) => ({ ...current, [project.id]: [] }));
@@ -496,7 +497,9 @@ export function ProductApp() {
     setNotice("");
     try {
       const appliedPreset = selectedPromptPreset;
-      const project = await createProject(content.slice(0, 48), appliedPreset?.id, draftSkillId);
+      const modes = skills.find((skill) => skill.id === draftSkillId)?.frontend.modes ?? [];
+      const mode = modes.length ? (modes.find((item) => item.id === draftModeId) ?? modes[0]).id : null;
+      const project = await createProject(content.slice(0, 48), appliedPreset?.id, draftSkillId, mode);
       if (appliedPreset) {
         setSnippets((current) => current.map((snippet) => (
           snippet.id === appliedPreset.id
@@ -737,7 +740,7 @@ export function ProductApp() {
   }
 
   if (route.kind === "workspace" && activeProject?.id === route.projectId) {
-    return <><NoticeHost message={notice} onClose={() => setNotice("")} /><CreativeWorkspace project={activeProject!} job={activeJob} workingJob={workingJob} skill={skills.find((skill) => skill.id === activeProject!.skill_id) ?? null} templates={readyTemplates} artifacts={artifacts} events={events} materials={materialsByProject[activeProject!.id] ?? []} materialUploading={materialUploading} onUploadMaterials={(files) => void uploadMaterialFiles(activeProject!.id, files)} onDeleteMaterial={(materialId) => void deleteMaterial(activeProject!.id, materialId)} initialTemplateId={selectedTemplateId} baseJobId={refinementBaseJob?.id ?? null} onBack={() => startDraft()} onGenerate={(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled) => startGeneration(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled)} onCancel={() => void cancelJob()} onReturnToBase={returnToBaseJob} /></>;
+    return <><NoticeHost message={notice} onClose={() => setNotice("")} /><CreativeWorkspace project={activeProject!} mode={activeProject!.mode} job={activeJob} workingJob={workingJob} skill={skills.find((skill) => skill.id === activeProject!.skill_id) ?? null} templates={readyTemplates} artifacts={artifacts} events={events} materials={materialsByProject[activeProject!.id] ?? []} materialUploading={materialUploading} onUploadMaterials={(files) => void uploadMaterialFiles(activeProject!.id, files)} onDeleteMaterial={(materialId) => void deleteMaterial(activeProject!.id, materialId)} initialTemplateId={selectedTemplateId} baseJobId={refinementBaseJob?.id ?? null} onBack={() => startDraft()} onGenerate={(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled) => startGeneration(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled)} onCancel={() => void cancelJob()} onReturnToBase={returnToBaseJob} /></>;
   }
 
   const replicaPageBody = nav === "templates"
@@ -764,7 +767,9 @@ export function ProductApp() {
       jobsByProject={jobsByProject}
       skills={skills}
       draftSkillId={draftSkillId}
-      onDraftSkillChange={setDraftSkillId}
+      onDraftSkillChange={(skillId) => { setDraftSkillId(skillId); setDraftModeId(""); }}
+      draftModeId={draftModeId}
+      onDraftModeChange={setDraftModeId}
       templates={readyTemplates}
       snippets={snippets}
       pendingMaterialFiles={pendingMaterialFiles}
@@ -823,6 +828,8 @@ type ReplicaDashboardShellProps = {
   skills: Skill[];
   draftSkillId: string;
   onDraftSkillChange: (skillId: string) => void;
+  draftModeId: string;
+  onDraftModeChange: (modeId: string) => void;
   templates: Template[];
   snippets: PromptSnippet[];
   pendingMaterialFiles: File[];
@@ -924,6 +931,7 @@ function ReplicaDashboardShell(props: ReplicaDashboardShellProps) {
           <h1 id="kppt-create-title">{skillFrontend?.hero_title || "把一个想法，变成一套能讲清楚的 PPT"}</h1>
           <p>{skillFrontend?.hero_subtitle || "先梳理需求，再设计大纲；每一步都由你确认，生成后还能逐页对话精修。"}</p>
           {props.skills.length > 1 && <div className="kppt-segmented kppt-skill-switch" role="tablist" aria-label="创作类型">{props.skills.map((skill) => <button key={skill.id} type="button" role="tab" aria-selected={skill.id === props.draftSkillId} className={skill.id === props.draftSkillId ? "is-active" : ""} onClick={() => props.onDraftSkillChange(skill.id)}>{skill.display_name}</button>)}</div>}
+          {(() => { const modes = activeSkill?.frontend.modes ?? []; return modes.length > 1 ? <div className="kppt-segmented kppt-skill-switch kppt-mode-switch" role="tablist" aria-label="创作模式">{modes.map((mode) => <button key={mode.id} type="button" role="tab" aria-selected={mode.id === props.draftModeId || (!props.draftModeId && mode.id === modes[0]?.id)} className={mode.id === (props.draftModeId || modes[0]?.id) ? "is-active" : ""} onClick={() => props.onDraftModeChange(mode.id)}>{mode.label}</button>)}</div> : null; })()}
           <div className="kppt-composer"><textarea value={props.draft} onChange={(event) => props.setDraft(event.target.value)} placeholder={skillFrontend?.composer_placeholder || "描述你想做的 PPT，例如：为集团管理层准备一份 15 页的云业务季度经营汇报……"} rows={4} /><div className="kppt-composer-actions"><div><UploadButton type="default" className={`kppt-soft-button${props.pendingMaterialFiles.length > 0 ? " is-selected" : ""}`} icon={<Paperclip size={16} />} loading={props.materialUploading} disabled={props.materialUploading} multiple accept=".pdf,.doc,.docx,.docm,.ppt,.pps,.pot,.pptx,.pptm,.ppsx,.ppsm,.xls,.xlsx,.xlsm,.xlsb,.odt,.ods,.odp,.rtf,.epub,.csv,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp" onFiles={props.onSelectMaterials}>{props.materialUploading ? "正在上传…" : "添加材料"}</UploadButton>{supportsTemplateTools && <><button className={`kppt-tool-button kppt-template-button${selectedTemplate ? " is-selected" : ""}`} type="button" aria-label="添加模板" title="添加模板" onClick={() => { setToolsOpen((current) => !current); setPromptOpen(false); }}><LayoutTemplate size={16} /><span>添加模板</span></button><button className={`kppt-tool-button kppt-prompt-button${selectedPromptPreset ? " is-selected" : ""}`} type="button" aria-label="添加提示词" title="添加提示词" onClick={() => { setPromptOpen((current) => !current); setToolsOpen(false); }}><Zap size={16} /><span>添加提示词</span></button></>}</div><button className="kppt-send" type="button" aria-label="开始创建 PPT" disabled={!props.draft.trim() || props.isSubmitting} onClick={props.onBegin}><Send size={17} /></button></div>{props.pendingMaterialFiles.length > 0 && <div className="kppt-material-chips" aria-label="待上传材料">{props.pendingMaterialFiles.map((file, index) => <span key={`${file.name}-${index}`}>{file.name}<button type="button" aria-label={`移除 ${file.name}`} onClick={() => props.onRemovePendingMaterial(index)}><X size={12} /></button></span>)}</div>}{toolsOpen && <div className="kppt-tools-popover">{props.templates.length > 0 ? <><button type="button" className={!props.selectedTemplateId ? "is-selected" : ""} onClick={() => { props.setSelectedTemplateId(null); setToolsOpen(false); }}>自由创作</button>{props.templates.map((template) => <button key={template.id} type="button" className={props.selectedTemplateId === template.id ? "is-selected" : ""} onClick={() => { props.setSelectedTemplateId(template.id); setToolsOpen(false); }}>{template.name}<small>{template.page_count ?? 0} 页模板</small></button>)}</> : <p className="kppt-tools-empty">暂无模板</p>}</div>}{promptOpen && <div className="kppt-tools-popover kppt-prompt-popover">{props.snippets.length ? props.snippets.map((snippet) => <button key={snippet.id} type="button" className={selectedPromptPreset?.id === snippet.id ? "is-selected" : ""} onClick={() => { props.onSelectPromptPreset(snippet); setPromptOpen(false); }}><span>{snippet.scope === "system" ? "系统预设" : "我的预设"}</span>{snippet.name}</button>) : <p className="kppt-tools-empty">暂无可用创作预设</p>}{selectedPromptPreset && <button type="button" className="kppt-prompt-clear" onClick={() => { props.onClearPromptPreset(); setPromptOpen(false); }}><X size={13} />取消添加提示词</button>}</div>}</div>
           <div className="kppt-quick-starts"><span>试试：</span>{quickStarts.map((item) => <button key={item} type="button" onClick={() => props.setDraft(activeSkill && activeSkill.id !== "ppt-master" ? `帮我做一份${item}` : `帮我制作一份${item} PPT`)}>{item}</button>)}</div>
         </section>

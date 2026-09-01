@@ -36,6 +36,12 @@ def _target_slide_number() -> int | None:
     return value if value > 0 else None
 
 
+def _job_mode() -> str:
+    """Creation mode snapshot handed over by the runner (draft/typeset…)."""
+
+    return os.environ.get("PPTMASTER_JOB_MODE", "").strip() or None
+
+
 def _load_skill() -> tuple[str, dict | None] | None:
     """Resolve the runner-selected skill and its manifest."""
 
@@ -103,6 +109,7 @@ def main() -> int:
         continue_mode=continue_mode,
         target_slide=target_slide,
         template_root=template_root,
+        mode=_job_mode(),
     )
     baseline: dict[str, str] = {}
     emit("status", status="initializing")

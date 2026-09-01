@@ -1,9 +1,12 @@
 export type User = { id: string; username: string; display_name: string; role: string; is_active: boolean; deletion_pending: boolean };
 export type ProviderModel = { id: string; model_id: string; display_name: string; is_active: boolean; is_default: boolean; is_verified: boolean; last_tested_at: string | null; last_test_error: string | null };
 export type Provider = { id: string; slug: string; display_name: string; base_url: string; api_key_hint: string; is_active: boolean; models: ProviderModel[] };
-export type Project = { id: string; title: string; skill_id: string; created_at: string; updated_at: string };
+export type Project = { id: string; title: string; skill_id: string; mode: string | null; created_at: string; updated_at: string };
 export type SkillStage = { id: string; label: string; description: string };
 export type SkillOutlineField = { name: string; label: string; required: boolean; max_length: number | null; default: string };
+export type SkillModeField = { name: string; label: string; type: string; required: boolean; max_length: number | null; default: string; placeholder: string; options: string[]; wide: boolean };
+export type SkillMode = { id: string; label: string; description: string; stages: SkillStage[]; fields: SkillModeField[] };
+export type SkillRefinement = { scope: "page" | "document"; assistant_name: string; scope_label: string; context_hint: string; empty_hint: string };
 export type SkillFrontend = {
   hero_title: string;
   hero_subtitle: string;
@@ -12,6 +15,8 @@ export type SkillFrontend = {
   projects_nav_label: string;
   quick_starts: string[];
   stages: SkillStage[];
+  modes: SkillMode[];
+  refinement: SkillRefinement;
   preview_kinds: string[];
   outline: { item_label: string; generator_prompt_key: string | null; fields: SkillOutlineField[]; first_item_is_title_page: boolean };
 };
@@ -22,7 +27,7 @@ export type Skill = {
   icon: string;
   enabled: boolean;
   primary_artifact_kind: string;
-  features: { templates: boolean; page_refinement: boolean; editor: boolean; materials_upload: boolean; resume: boolean };
+  features: { templates: boolean; page_refinement: boolean; document_refinement: boolean; editor: boolean; materials_upload: boolean; resume: boolean };
   frontend: SkillFrontend;
 };
 export type ProjectMaterial = { id: string; original_filename: string; content_type: string; size_bytes: number; status: "processing" | "ready" | "failed"; metadata: Record<string, unknown>; error: string | null; created_at: string; updated_at: string };
@@ -33,6 +38,7 @@ export type Job = {
   base_job_id: string | null;
   resumed_by_job_id: string | null;
   skill_id: string;
+  mode: string | null;
   target_slide_number: number | null;
   template_id: string | null;
   template_name: string | null;

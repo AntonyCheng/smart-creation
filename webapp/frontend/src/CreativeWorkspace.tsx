@@ -28,6 +28,9 @@ import type { Skill } from "./appTypes";
 import { ConfirmAction, NoticeHost } from "./ui";
 
 type Project = { id: string; title: string };
+type SkillModeField = { name: string; label: string; type: string; required: boolean; max_length: number | null; default: string; placeholder: string; options: string[]; wide: boolean; rows?: number };
+type SkillMode = { id: string; label: string; description: string; stages: Array<{ id: string; label: string; description: string }>; fields: SkillModeField[] };
+type RefinementConfig = { scope: "page" | "document"; assistant_name: string; scope_label: string; context_hint: string; empty_hint: string };
 type ProjectMaterial = { id: string; original_filename: string; content_type: string; size_bytes: number; status: "processing" | "ready" | "failed"; metadata: Record<string, unknown>; error: string | null };
 type JobStatus = "queued" | "running" | "succeeded" | "failed" | "cancelled";
 type Job = {
@@ -52,7 +55,7 @@ type JobEvent = { id: number; event_type: string; payload: Record<string, unknow
 type ChatMessage = { id: string; role: "user" | "assistant"; content: string; pending?: boolean };
 type RefinementMessage = { id: string; job_id: string | null; slide_number: number; role: "user" | "assistant"; content: string; message_order: number; created_at: string };
 type RefinementIntent = { action: "modify_current_slide" | "ask_clarification" | "answer_only" | "unsupported"; confidence: number; normalized_request: string; reply: string; clarification_question: string };
-type CreativeStage = "requirements" | "outline" | "template" | "generating" | "preview";
+type CreativeStage = "requirements" | "outline" | "template" | "generating" | "preview" | "content" | "format";
 type OutlineSlide = { title: string; purpose: string; content: string; kind: string; notes: string };
 type CreativeState = {
   stage: CreativeStage;
@@ -63,6 +66,7 @@ type CreativeState = {
 };
 type Props = {
   project: Project;
+  mode: string | null;
   job: Job | null;
   workingJob: Job | null;
   skill: Skill | null;
@@ -89,15 +93,30 @@ const defaultStages: Array<{ id: CreativeStage; label: string; description: stri
   { id: "preview", label: "预览精修", description: "查看与继续修改" },
 ];
 // Stage ids must stay within the backend-validated set; skills pick a subset.
-const allowedStageIds = new Set<string>(["requirements", "outline", "template", "generating", "preview"]);
+const allowedStageIds = new Set<string>(["requirements", "outline", "template", "generating", "preview", "content", "format"]);
 
-function stagesForSkill(skill: Skill | null): Array<{ id: CreativeStage; label: string; description: string }> {
-  const declared = skill?.frontend.stages ?? [];
+function activeModeFor(skill: Skill | null, mode: string | null): SkillMode | null {
+  const modes = skill?.frontend.modes ?? [];
+  if (!modes.length) return null;
+  return modes.find((item) => item.id === mode) ?? modes[0] ?? null;
+}
+
+function stagesForSkill(skill: Skill | null, mode: string | null): Array<{ id: CreativeStage; label: string; description: string }> {
+  const activeMode = activeModeFor(skill, mode);
+  const declared = activeMode ? activeMode.stages : skill?.frontend.stages ?? [];
   const filtered = declared
     .filter((stage) => allowedStageIds.has(stage.id))
     .map((stage) => ({ id: stage.id as CreativeStage, label: stage.label, description: stage.description }));
   return filtered.length ? filtered : defaultStages;
 }
+
+const defaultRefinementConfig: RefinementConfig = {
+  scope: "page",
+  assistant_name: "AI 页面助手",
+  scope_label: "当前页",
+  context_hint: "只会修改当前页，其他页面保持不变。",
+  empty_hint: "告诉我想如何修改当前页…",
+};
 const pageRangeOptions = ["1-4 页", "5-7 页", "8-10 页", "11-12 页", "13-15 页", "16-19 页", "20 页以上"];
 const legacyPageRangeMap: Record<string, string> = {
   "10-12 页": "11-12 页",
@@ -175,7 +194,17 @@ function normalizeOutline(outline: OutlineSlide[]): OutlineSlide[] {
   return (outline || []).map((slide) => ({ ...slide, content: String(slide.content || "") }));
 }
 
-function initialRequirements(project: Project, source: Record<string, unknown>): Record<string, unknown> {
+function initialRequirements(project: Project, source: Record<string, unknown>, fields: SkillModeField[] = []): Record<string, unknown> {
+  if (fields.length) {
+    const next: Record<string, unknown> = {};
+    for (const field of fields) {
+      const raw = source[field.name];
+      next[field.name] = raw === undefined || raw === null || String(raw) === "" ? String(field.default || "") : String(raw);
+    }
+    // Pasted typeset content is not a form field but still part of the state.
+    if (source.content !== undefined) next.content = String(source.content || "");
+    return next;
+  }
   return {
     topic: String(source.topic || project.title),
     scenario: String(source.scenario || "业务汇报"),
@@ -210,7 +239,9 @@ export function CreativeWorkspace(props: Props) {
 
   const currentJob = props.workingJob || props.job;
   const pageRefinementConversation = Boolean(currentJob?.target_slide_number);
-  const stages = useMemo(() => stagesForSkill(props.skill), [props.skill]);
+  const activeMode = useMemo(() => activeModeFor(props.skill, props.mode), [props.skill, props.mode]);
+  const modeFields = activeMode?.fields ?? [];
+  const stages = useMemo(() => stagesForSkill(props.skill, props.mode), [props.skill, props.mode]);
   const primaryKind = props.skill?.primary_artifact_kind || "pptx";
   const outlineFields = props.skill?.frontend.outline.fields ?? [];
   const outlineFieldLabel = (name: string, fallback: string): string =>
@@ -219,14 +250,21 @@ export function CreativeWorkspace(props: Props) {
   const isPpt = !props.skill || props.skill.id === "ppt-master";
   const itemNoun = props.skill?.frontend.outline.item_label || "页";
   const supportsEditor = props.skill ? props.skill.features.editor : true;
-  const supportsRefinement = props.skill ? props.skill.features.page_refinement : true;
+  const documentRefinement = Boolean(props.skill?.features.document_refinement);
+  const documentRefinementConversation = documentRefinement && Boolean(props.workingJob || pendingChatJobId);
+  const refinementConfig: RefinementConfig = documentRefinement && props.skill?.frontend.refinement
+    ? props.skill.frontend.refinement
+    : defaultRefinementConfig;
+  const supportsRefinement = props.skill
+    ? Boolean(props.skill.features.page_refinement || props.skill.features.document_refinement)
+    : true;
   const effectiveStage: CreativeStage = props.workingJob
     ? "generating"
     : props.job?.status === "succeeded"
       ? "preview"
       : props.job?.status === "failed" || props.job?.status === "cancelled"
         ? "generating"
-      : state?.stage || "requirements";
+      : (state?.stage as CreativeStage) || stages[0]?.id || "requirements";
   const currentIndex = stageIndexOf(effectiveStage, stages);
   const previewKinds = props.skill?.frontend.preview_kinds ?? ["svg"];
   const previewSlides = useMemo(
@@ -262,14 +300,14 @@ export function CreativeWorkspace(props: Props) {
     void api<CreativeState>(`/api/v1/projects/${props.project.id}/creative-state`).then((nextState) => {
       if (ignored) return;
       setState(nextState);
-      setRequirements(initialRequirements(props.project, nextState.requirements));
+      setRequirements(initialRequirements(props.project, nextState.requirements, modeFields));
       setOutline(nextState.outline.length ? normalizeOutline(nextState.outline) : suggestedOutline(props.project.title, pageCountForRange(nextState.requirements.page_range)));
       setSelectedTemplateId(nextState.selected_template_id || props.initialTemplateId);
     }).catch((error: unknown) => {
       if (!ignored) setNotice(error instanceof Error ? error.message : "无法载入创作工作台。");
     });
     return () => { ignored = true; };
-  }, [props.initialTemplateId, props.project.id, props.project.title]);
+  }, [modeFields, props.initialTemplateId, props.project.id, props.project.title]);
 
   useEffect(() => {
     if (activeSlide >= previewSlides.length) setActiveSlide(Math.max(0, previewSlides.length - 1));
@@ -282,14 +320,15 @@ export function CreativeWorkspace(props: Props) {
   }, [props.project.id]);
 
   useEffect(() => {
-    if (effectiveStage !== "preview" && !pageRefinementConversation) return;
-    if (chatSlideRef.current !== null && chatSlideRef.current !== activeSlide) {
+    if (effectiveStage !== "preview" && !pageRefinementConversation && !documentRefinementConversation) return;
+    if (!documentRefinement && chatSlideRef.current !== null && chatSlideRef.current !== activeSlide) {
       setChatMessages([]);
       setPendingChatJobId(null);
     }
     chatSlideRef.current = activeSlide;
+    const scopeNumber = documentRefinement ? 0 : activeSlide + 1;
     let ignored = false;
-    void api<RefinementMessage[]>(`/api/v1/projects/${props.project.id}/refinement-messages?slide_number=${activeSlide + 1}`)
+    void api<RefinementMessage[]>(`/api/v1/projects/${props.project.id}/refinement-messages?slide_number=${scopeNumber}`)
       .then((messages) => {
         if (ignored) return;
         const restored: ChatMessage[] = [...new Map(messages.sort((left, right) => left.message_order - right.message_order).map((message) => [message.id, message])).values()].map((message) => ({
@@ -301,35 +340,44 @@ export function CreativeWorkspace(props: Props) {
           restored.push({
             id: `pending-${currentJob.id}`,
             role: "assistant",
-            content: "已收到，我正在根据你的要求修改当前页面。",
+            content: documentRefinement ? "已收到，我正在根据你的要求修改这份公文。" : "已收到，我正在根据你的要求修改当前页面。",
             pending: true,
           });
         }
         setChatMessages(restored.length ? restored : [{
           id: `welcome-${props.project.id}-${activeSlide}`,
           role: "assistant",
-          content: "你好，我可以基于当前选中的页面继续修改。你可以直接告诉我想改什么，其他页面会保持不变。",
+          content: documentRefinement
+            ? `你好，我是${refinementConfig.assistant_name}。这份公文已生成，你可以直接告诉我需要修改的地方，${refinementConfig.context_hint}`
+            : "你好，我可以基于当前选中的页面继续修改。你可以直接告诉我想改什么，其他页面会保持不变。",
         }]);
       })
       .catch(() => undefined);
     return () => { ignored = true; };
-  }, [activeSlide, currentJob?.id, effectiveStage, pageRefinementConversation, props.project.id]);
+  }, [activeSlide, currentJob?.id, documentRefinement, documentRefinementConversation, effectiveStage, pageRefinementConversation, props.project.id, refinementConfig]);
 
   useEffect(() => {
-    const trackedChatJobId = pendingChatJobId || (props.job?.target_slide_number ? props.job.id : null);
+    const trackedChatJobId = pendingChatJobId || (props.job && (props.job.target_slide_number || (documentRefinement && props.job.base_job_id)) ? props.job.id : null);
     if (!trackedChatJobId || !props.job || props.job.id !== trackedChatJobId) return;
     if (props.job.status === "queued" || props.job.status === "running") {
-      setChatMessages((current) => current.map((message) => message.pending && (pendingChatJobId || message.id === `pending-${trackedChatJobId}`) ? { ...message, content: "已收到，我正在根据你的要求修改当前页面。" } : message));
+      const workingText = documentRefinement ? "已收到，我正在根据你的要求修改这份公文。" : "已收到，我正在根据你的要求修改当前页面。";
+      setChatMessages((current) => current.map((message) => message.pending && (pendingChatJobId || message.id === `pending-${trackedChatJobId}`) ? { ...message, content: workingText } : message));
       return;
     }
     const content = props.job.status === "succeeded"
-      ? "当前页面已修改完成，结果已应用到当前 PPT。你还可以继续告诉我需要调整的地方。"
+      ? documentRefinement
+        ? "公文已按你的要求修改完成，可下载最新版本，或继续告诉我需要调整的地方。"
+        : "当前页面已修改完成，结果已应用到当前 PPT。你还可以继续告诉我需要调整的地方。"
       : props.job.status === "cancelled"
-        ? "这次修改已中止，当前 PPT 没有变化。你可以继续发送新的修改要求。"
-        : "这次修改没有完成，当前 PPT 没有变化。你可以直接重试，或换一种方式描述修改要求。";
+        ? documentRefinement
+          ? "这次修改已中止，公文没有变化。你可以继续发送新的修改要求。"
+          : "这次修改已中止，当前 PPT 没有变化。你可以继续发送新的修改要求。"
+        : documentRefinement
+          ? "这次修改没有完成，公文没有变化。你可以直接重试，或换一种方式描述修改要求。"
+          : "这次修改没有完成，当前 PPT 没有变化。你可以直接重试，或换一种方式描述修改要求。";
     setChatMessages((current) => current.map((message) => message.pending && (pendingChatJobId || message.id === `pending-${trackedChatJobId}`) ? { ...message, content, pending: false } : message));
     setPendingChatJobId(null);
-  }, [pendingChatJobId, props.job?.id, props.job?.status]);
+  }, [documentRefinement, pendingChatJobId, props.job?.id, props.job?.status]);
 
   useEffect(() => {
     const node = chatScrollRef.current;
@@ -357,7 +405,7 @@ export function CreativeWorkspace(props: Props) {
   async function generateOutline(): Promise<void> {
     const topic = String(requirements.topic || "").trim();
     if (!topic) {
-      setNotice("请先填写 PPT 主题。");
+      setNotice(`请先填写${modeFields.find((field) => field.required)?.label || "主题"}。`);
       return;
     }
     setIsGeneratingOutline(true);
@@ -379,10 +427,18 @@ export function CreativeWorkspace(props: Props) {
   }
 
   async function confirmRequirements(): Promise<void> {
-    const topic = String(requirements.topic || "").trim();
-    if (!topic) {
-      setNotice("请先填写 PPT 主题。");
-      return;
+    if (modeFields.length) {
+      const missing = modeFields.find((field) => field.required && !String(requirements[field.name] || "").trim());
+      if (missing) {
+        setNotice(`请先填写${missing.label}。`);
+        return;
+      }
+    } else {
+      const topic = String(requirements.topic || "").trim();
+      if (!topic) {
+        setNotice("请先填写 PPT 主题。");
+        return;
+      }
     }
     const hasSavedOutline = Boolean(state?.outline?.length);
     const saved = await saveWorkspace({
@@ -397,6 +453,31 @@ export function CreativeWorkspace(props: Props) {
       return;
     }
     await generateOutline();
+  }
+
+  async function confirmContent(): Promise<void> {
+    const content = String(requirements.content || "").trim();
+    if (!content && !props.materials.length) {
+      setNotice("请粘贴公文正文，或上传内容文件后再继续。");
+      return;
+    }
+    const nextStage = stages.some((stage) => stage.id === "format") ? "format" : "generating";
+    const saved = await saveWorkspace({ stage: nextStage, requirements });
+    if (!saved) return;
+    if (nextStage === "generating") {
+      await props.onGenerate("按录入内容排版生成公文文件。", null);
+    }
+  }
+
+  async function confirmFormat(): Promise<void> {
+    const missing = modeFields.find((field) => field.required && !String(requirements[field.name] || "").trim());
+    if (missing) {
+      setNotice(`请先填写${missing.label}。`);
+      return;
+    }
+    const saved = await saveWorkspace({ stage: "generating", requirements });
+    if (!saved) return;
+    await props.onGenerate("按确认的版式要素与录入内容排版生成公文文件。", null);
   }
 
   async function requestRegenerateOutline(): Promise<void> {
@@ -432,7 +513,9 @@ export function CreativeWorkspace(props: Props) {
     const requestText = refinement.trim();
     if (!requestText) return;
     if (!props.job) return;
-    const pageTitle = activeOutline?.title || activePreview?.filename || `第 ${activeSlide + 1} 页`;
+    const scopeTitle = documentRefinement
+      ? String(requirements.title || props.project.title || "当前公文").slice(0, 200)
+      : (activeOutline?.title || activePreview?.filename || `第 ${activeSlide + 1} 页`);
     const clientMessageId = createClientMessageId();
     const userMessage: ChatMessage = { id: `user-${clientMessageId}`, role: "user", content: requestText };
     const assistantMessage: ChatMessage = { id: `assistant-${Date.now()}`, role: "assistant", content: "正在理解你的要求…", pending: true };
@@ -442,32 +525,38 @@ export function CreativeWorkspace(props: Props) {
     try {
       const intent = await api<RefinementIntent>(`/api/v1/projects/${props.project.id}/refinement-intent`, {
         method: "POST",
-        body: JSON.stringify({ slide_number: activeSlide + 1, slide_title: pageTitle, message: requestText, client_message_id: clientMessageId }),
+        body: JSON.stringify({ slide_number: documentRefinement ? 0 : activeSlide + 1, slide_title: scopeTitle, message: requestText, client_message_id: clientMessageId }),
       });
       if (intent.action !== "modify_current_slide") {
         const response = intent.action === "ask_clarification"
           ? intent.clarification_question
           : intent.reply;
-        setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: response || "请说明你想如何修改当前页面。", pending: false } : message));
+        setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: response || (documentRefinement ? "请说明你想如何修改这份公文。" : "请说明你想如何修改当前页面。"), pending: false } : message));
         return;
       }
-      if (!activePreview) {
+      if (!documentRefinement && !activePreview) {
         setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: "当前页面文件尚未准备好，暂时不能提交修改。请先完成或重试 PPT 生成。", pending: false } : message));
         return;
       }
-      setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: "已理解，我正在提交当前页面修改。" } : message));
-      const scopedPrompt = [
-        `仅修改当前选中的第 ${activeSlide + 1} 页（${pageTitle}）。`,
-        `目标页面文件：${activePreview.filename}。`,
-        "保留其他页面、页面顺序、模板和整体风格不变。",
-        "完成后重新导出完整 PPTX，并确保目标页面仍然可编辑。",
-        `用户修改要求：${intent.normalized_request || requestText}`,
-      ].join("\n");
-      const created = await props.onGenerate(scopedPrompt, null, props.job.id, activeSlide + 1, requestText, clientMessageId);
+      setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: documentRefinement ? "已理解，我正在提交公文修改。" : "已理解，我正在提交当前页面修改。" } : message));
+      const scopedPrompt = documentRefinement
+        ? [
+          "请基于这份已生成的公文继续修改。",
+          "保持文种、整体结构与未提及的内容不变，按修改要求重新生成并导出 DOCX。",
+          `用户修改要求：${intent.normalized_request || requestText}`,
+        ].join("\n")
+        : [
+          `仅修改当前选中的第 ${activeSlide + 1} 页（${scopeTitle}）。`,
+          `目标页面文件：${activePreview?.filename}。`,
+          "保留其他页面、页面顺序、模板和整体风格不变。",
+          "完成后重新导出完整 PPTX，并确保目标页面仍然可编辑。",
+          `用户修改要求：${intent.normalized_request || requestText}`,
+        ].join("\n");
+      const created = await props.onGenerate(scopedPrompt, null, props.job.id, documentRefinement ? null : activeSlide + 1, requestText, clientMessageId);
       if (created) {
         setPendingChatJobId(created.id);
       } else {
-        setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: "修改任务未能提交，当前 PPT 没有变化，请稍后重试。", pending: false } : message));
+        setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: documentRefinement ? "修改任务未能提交，公文没有变化，请稍后重试。" : "修改任务未能提交，当前 PPT 没有变化，请稍后重试。", pending: false } : message));
       }
     } catch (error) {
       setChatMessages((current) => current.map((message) => message.id === assistantMessage.id ? { ...message, content: error instanceof Error ? error.message : "暂时无法理解这条消息，请稍后重试。", pending: false } : message));
@@ -520,7 +609,7 @@ export function CreativeWorkspace(props: Props) {
 
   const activePreview = previewSlides[activeSlide] || null;
   const activeOutline = outline[activeSlide] || null;
-  const chatIsPageScoped = supportsRefinement && (effectiveStage === "preview" || pageRefinementConversation);
+  const chatIsPageScoped = supportsRefinement && (effectiveStage === "preview" || pageRefinementConversation || documentRefinementConversation);
 
   return (
     <main className="zc-creative-workspace kppt-workbench-shell">
@@ -536,18 +625,27 @@ export function CreativeWorkspace(props: Props) {
       <div className="zc-creative-layout">
         <aside className={`zc-workbench-rail ${effectiveStage === "preview" ? "zc-workbench-rail--preview" : ""}`}>{effectiveStage === "preview" ? <div className="zc-rail-slides">{previewSlides.map((slide, index) => <button className={index === activeSlide ? "is-active" : ""} type="button" key={slide.id} onClick={() => setActiveSlide(index)}><img src={currentJob ? artifactUrl(props.project.id, currentJob.id, slide.id) : ""} alt={`第 ${index + 1} 页缩略图`} /><span>{index + 1}</span><small>{outline[index]?.title || slide.filename}</small></button>)}</div> : <><div className="zc-rail-heading"><span>创作流程</span><strong>{`${Math.min(currentIndex + 1, stages.length)} / ${stages.length}`}</strong></div><div className="zc-stage-navigation">{stages.map((item, index) => <button type="button" key={item.id} className={item.id === effectiveStage ? "is-active" : ""} onClick={() => changeStage(item.id)} disabled={(index > currentIndex && !(item.id === "outline" && outline.length > 0)) || Boolean(props.workingJob) || isGeneratingOutline}><i>{index < currentIndex ? <Check size={12} /> : index + 1}</i><span><strong>{item.label}</strong><small>{item.description}</small></span></button>)}</div></>}</aside>
         <section className={`zc-workbench-main zc-workbench-main--${effectiveStage}`}>
-          {!state ? <div className="zc-workbench-loading"><LoaderCircle className="zc-spin" size={28} />正在载入创作工作台</div> : effectiveStage === "requirements" && isGeneratingOutline ? <OutlineSkeletonPanel /> : effectiveStage === "requirements" ? <RequirementsPanel requirements={requirements} setRequirements={setRequirements} showPageRange={isPpt} notesEnabled={state.notes_enabled} setNotesEnabled={(value) => setState({ ...state, notes_enabled: value })} materials={props.materials} materialUploading={props.materialUploading} onUploadMaterials={props.onUploadMaterials} onDeleteMaterial={props.onDeleteMaterial} onConfirm={() => void confirmRequirements()} busy={isSaving || isGeneratingOutline} hasOutline={Boolean(state.outline.length)} /> : effectiveStage === "outline" ? <OutlinePanel outline={outline} itemNoun={itemNoun} hasTemplateStage={stages.some((stage) => stage.id === "template")} fieldLabel={outlineFieldLabel} onEdit={editSlide} onMove={moveSlide} onAdd={() => setOutline((current) => [...current, { title: isPpt ? "新页面" : "新部分", purpose: isPpt ? "说明本页希望观众理解什么" : "说明本部分要表达什么", content: "", kind: kindDefault, notes: isPpt ? "补充本页讲解词。" : "补充本部分写作要点。" }])} onRemove={(index) => setOutline((current) => current.filter((_, slideIndex) => slideIndex !== index))} onConfirm={() => void confirmOutline()} onRegenerate={() => setShowRegenerateConfirm(true)} busy={isSaving || isGeneratingOutline} /> : effectiveStage === "template" ? <TemplatePanel templates={props.templates} selectedTemplateId={selectedTemplateId} onSelect={setSelectedTemplateId} onConfirm={() => void confirmTemplate()} busy={isSaving} /> : effectiveStage === "generating" ? <GeneratingPanel progress={progress} message={progressMessage} artifactCount={previewSlides.length} targetSlideNumber={currentJob?.target_slide_number ?? null} status={currentJob?.status || "queued"} error={currentJob?.error || null} events={props.events} canCancel={Boolean(props.workingJob)} canReturnToBase={Boolean(currentJob?.target_slide_number && (currentJob?.base_job_id || props.baseJobId))} retrying={isRetrying} onRetry={(continueFromFailure) => void retryGeneration(continueFromFailure)} cancelling={Boolean(props.workingJob?.cancellation_requested)} onCancel={props.onCancel} onReturnToBase={returnToBasePpt} /> : <PreviewPanel project={props.project} job={props.job} activeArtifact={activePreview} activeOutline={activeOutline} />}
+          {!state ? <div className="zc-workbench-loading"><LoaderCircle className="zc-spin" size={28} />正在载入创作工作台</div> : effectiveStage === "requirements" && isGeneratingOutline ? <OutlineSkeletonPanel /> : effectiveStage === "requirements" && modeFields.length ? <ModeFieldsPanel stageTag={`0${stageIndexOf("requirements", stages) + 1} · ${stages[stageIndexOf("requirements", stages)]?.label || "需求梳理"}`} heading={activeMode?.id === "typeset" ? "确认排版要求" : "确认这次要写什么公文"} description={activeMode?.description || "确认要求后进入下一步。"} fields={modeFields} requirements={requirements} setRequirements={setRequirements} materials={props.materials} materialUploading={props.materialUploading} onUploadMaterials={props.onUploadMaterials} onDeleteMaterial={props.onDeleteMaterial} onConfirm={() => void confirmRequirements()} busy={isSaving || isGeneratingOutline} confirmLabel={state.outline.length ? "下一步：查看提纲" : "下一步：设计提纲"} confirmHint={state.outline.length ? "需求已保存，可继续查看现有提纲" : "需求确认后将生成一份可编辑的提纲草稿"} /> : effectiveStage === "requirements" ? <RequirementsPanel requirements={requirements} setRequirements={setRequirements} showPageRange={isPpt} notesEnabled={state.notes_enabled} setNotesEnabled={(value) => setState({ ...state, notes_enabled: value })} materials={props.materials} materialUploading={props.materialUploading} onUploadMaterials={props.onUploadMaterials} onDeleteMaterial={props.onDeleteMaterial} onConfirm={() => void confirmRequirements()} busy={isSaving || isGeneratingOutline} hasOutline={Boolean(state.outline.length)} /> : effectiveStage === "content" ? <ModeFieldsPanel stageTag={`0${stageIndexOf("content", stages) + 1} · ${stages[stageIndexOf("content", stages)]?.label || "内容录入"}`} heading="提供要排版的公文内容" description="粘贴正文或上传已有文档；排版时会逐字保留内容，只调整结构与版式。" fields={[{ name: "content", label: "公文正文", type: "textarea", required: false, max_length: null, default: "", placeholder: "在此粘贴公文正文……也可以直接上传 docx/txt 文件，系统会自动解析。", options: [], wide: true, rows: 12 }]} requirements={requirements} setRequirements={setRequirements} materials={props.materials} materialUploading={props.materialUploading} onUploadMaterials={props.onUploadMaterials} onDeleteMaterial={props.onDeleteMaterial} onConfirm={() => void confirmContent()} busy={isSaving} confirmLabel="下一步：确认版式要素" confirmHint="确认内容后进入版式要素确认" /> : effectiveStage === "format" ? <ModeFieldsPanel stageTag={`0${stageIndexOf("format", stages) + 1} · ${stages[stageIndexOf("format", stages)]?.label || "版式要素"}`} heading="确认公文的版式要素" description="红头、主送与版记要素将按 GB/T 9704 编排；未提供的事实会用 XX 占位。" fields={modeFields} requirements={requirements} setRequirements={setRequirements} materials={props.materials} materialUploading={props.materialUploading} onUploadMaterials={props.onUploadMaterials} onDeleteMaterial={props.onDeleteMaterial} onConfirm={() => void confirmFormat()} busy={isSaving || Boolean(props.workingJob)} confirmLabel="生成公文" confirmHint="正文会逐字排版，确认后开始生成" /> : effectiveStage === "outline" ? <OutlinePanel outline={outline} itemNoun={itemNoun} hasTemplateStage={stages.some((stage) => stage.id === "template")} fieldLabel={outlineFieldLabel} onEdit={editSlide} onMove={moveSlide} onAdd={() => setOutline((current) => [...current, { title: isPpt ? "新页面" : "新部分", purpose: isPpt ? "说明本页希望观众理解什么" : "说明本部分要表达什么", content: "", kind: kindDefault, notes: isPpt ? "补充本页讲解词。" : "补充本部分写作要点。" }])} onRemove={(index) => setOutline((current) => current.filter((_, slideIndex) => slideIndex !== index))} onConfirm={() => void confirmOutline()} onRegenerate={() => setShowRegenerateConfirm(true)} busy={isSaving || isGeneratingOutline} /> : effectiveStage === "template" ? <TemplatePanel templates={props.templates} selectedTemplateId={selectedTemplateId} onSelect={setSelectedTemplateId} onConfirm={() => void confirmTemplate()} busy={isSaving} /> : effectiveStage === "generating" ? <GeneratingPanel progress={progress} message={progressMessage} artifactCount={previewSlides.length} targetSlideNumber={currentJob?.target_slide_number ?? null} status={currentJob?.status || "queued"} error={currentJob?.error || null} events={props.events} canCancel={Boolean(props.workingJob)} canReturnToBase={Boolean(currentJob?.target_slide_number && (currentJob?.base_job_id || props.baseJobId))} retrying={isRetrying} onRetry={(continueFromFailure) => void retryGeneration(continueFromFailure)} cancelling={Boolean(props.workingJob?.cancellation_requested)} onCancel={props.onCancel} onReturnToBase={returnToBasePpt} /> : <PreviewPanel project={props.project} job={props.job} activeArtifact={activePreview} activeOutline={activeOutline} />}
         </section>
-        <aside className={`zc-workbench-chat ${chatIsPageScoped ? "zc-workbench-chat--preview" : ""}`}><header><span><Sparkles size={16} /></span><div><strong>{chatIsPageScoped ? "AI 页面助手" : "AI 创作助手"}</strong><small><i /> {chatIsPageScoped ? (props.workingJob ? "当前页修改进行中" : isClassifyingIntent ? "正在理解你的要求" : "当前页可交互修改") : "当前可继续补充需求"}</small></div></header>{chatIsPageScoped ? <div className="zc-chat-editor"><div className="zc-chat-context"><span>当前对话范围</span><strong>第 {activeSlide + 1} 页 · {activeOutline?.title || activePreview?.filename || "当前页面"}</strong><small>只会修改当前页，其他页面保持不变。</small></div><div className="zc-chat-thread" ref={chatScrollRef} aria-live="polite">{chatMessages.map((message) => <article className={`zc-chat-message zc-chat-message--${message.role}`} key={message.id}><span className="zc-chat-avatar">{message.role === "assistant" ? <Sparkles size={13} /> : "你"}</span><div><strong>{message.role === "assistant" ? "AI 页面助手" : "你"}</strong><p>{message.content}{message.pending && <LoaderCircle size={13} className="zc-spin zc-chat-pending" />}</p></div></article>)}</div><label className="zc-chat-composer"><span className="sr-only">发送消息</span><textarea rows={3} value={refinement} onChange={(event) => setRefinement(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void submitRefinement(); } }} placeholder="告诉我想如何修改这一页…" disabled={Boolean(props.workingJob) || Boolean(pendingChatJobId) || isClassifyingIntent} /><button className="zc-chat-send" type="button" aria-label="发送消息" title="发送消息" onClick={() => void submitRefinement()} disabled={!refinement.trim() || Boolean(props.workingJob) || Boolean(pendingChatJobId) || isClassifyingIntent}><Send size={16} /></button></label></div> : <div className="zc-chat-context"><span>当前阶段</span><strong>{stages[currentIndex].label}</strong><small>确认内容后会自动保存</small></div>}</aside>
+        <aside className={`zc-workbench-chat ${chatIsPageScoped ? "zc-workbench-chat--preview" : ""}`}><header><span><Sparkles size={16} /></span><div><strong>{chatIsPageScoped ? refinementConfig.assistant_name : "AI 创作助手"}</strong><small><i /> {chatIsPageScoped ? (props.workingJob ? (documentRefinement ? "公文修改进行中" : "当前页修改进行中") : isClassifyingIntent ? "正在理解你的要求" : documentRefinement ? "全文可对话修改" : "当前页可交互修改") : "当前可继续补充需求"}</small></div></header>{chatIsPageScoped ? <div className="zc-chat-editor"><div className="zc-chat-context"><span>当前对话范围</span><strong>{documentRefinement ? `全文 · ${String(requirements.title || props.project.title || "当前公文").slice(0, 40)}` : `第 ${activeSlide + 1} 页 · ${activeOutline?.title || activePreview?.filename || "当前页面"}`}</strong><small>{refinementConfig.context_hint}</small></div><div className="zc-chat-thread" ref={chatScrollRef} aria-live="polite">{chatMessages.map((message) => <article className={`zc-chat-message zc-chat-message--${message.role}`} key={message.id}><span className="zc-chat-avatar">{message.role === "assistant" ? <Sparkles size={13} /> : "你"}</span><div><strong>{message.role === "assistant" ? refinementConfig.assistant_name : "你"}</strong><p>{message.content}{message.pending && <LoaderCircle size={13} className="zc-spin zc-chat-pending" />}</p></div></article>)}</div><label className="zc-chat-composer"><span className="sr-only">发送消息</span><textarea rows={3} value={refinement} onChange={(event) => setRefinement(event.target.value)} onKeyDown={(event) => { if ((event.ctrlKey || event.metaKey) && event.key === "Enter") { event.preventDefault(); void submitRefinement(); } }} placeholder={refinementConfig.empty_hint} disabled={Boolean(props.workingJob) || Boolean(pendingChatJobId) || isClassifyingIntent} /><button className="zc-chat-send" type="button" aria-label="发送消息" title="发送消息" onClick={() => void submitRefinement()} disabled={!refinement.trim() || Boolean(props.workingJob) || Boolean(pendingChatJobId) || isClassifyingIntent}><Send size={16} /></button></label></div> : <div className="zc-chat-context"><span>当前阶段</span><strong>{stages[currentIndex].label}</strong><small>确认内容后会自动保存</small></div>}</aside>
       </div>
       {showRegenerateConfirm && <div className="zc-dialog-backdrop" role="presentation"><section className="zc-confirm-dialog" role="dialog" aria-modal="true" aria-labelledby="regenerate-outline-title"><header><div><strong id="regenerate-outline-title">重新生成大纲？</strong><span>新的大纲会覆盖当前已保存的大纲内容。</span></div><button className="zc-icon" type="button" aria-label="关闭重新生成确认" onClick={() => setShowRegenerateConfirm(false)}><X size={17} /></button></header><div className="zc-confirm-dialog-body"><p>系统会根据当前需求、页数范围和已添加材料重新规划页面。当前编辑内容不会自动合并到新大纲。</p><div><button className="zc-secondary" type="button" onClick={() => setShowRegenerateConfirm(false)}>取消</button><button className="zc-primary" type="button" onClick={() => void requestRegenerateOutline()}><RefreshCw size={15} />重新生成</button></div></div></section></div>}
     </main>
   );
 }
 
+function MaterialCard(props: { materials: ProjectMaterial[]; materialUploading: boolean; onUploadMaterials: (files: File[]) => void; onDeleteMaterial: (materialId: string) => void }) {
+  return <section className="zc-material-card"><header><div><Upload size={17} /><strong>创作材料</strong><span>{props.materials.length ? `已添加 ${props.materials.length} 份` : "可选"}</span></div><label className="zc-secondary zc-material-upload">{props.materialUploading ? "正在上传…" : "添加材料"}<input type="file" multiple accept=".pdf,.doc,.docx,.docm,.ppt,.pps,.pot,.pptx,.pptm,.ppsx,.ppsm,.xls,.xlsx,.xlsm,.xlsb,.odt,.ods,.odp,.rtf,.epub,.csv,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp" onChange={(event) => { props.onUploadMaterials(Array.from(event.target.files || [])); event.target.value = ""; }} disabled={props.materialUploading} /></label></header>{props.materials.length ? <div className="zc-material-list">{props.materials.map((material) => { const metadata = material.metadata || {}; const parseStatus = String(metadata.parse_status || "deferred"); const parseMessage = String(metadata.parse_message || (material.status === "ready" ? "已保存，生成时解析" : material.error || "处理失败")); const excerpt = String(metadata.text_excerpt || ""); return <div className="zc-material-item" key={material.id}><div className="zc-material-item-main"><span title={material.original_filename}>{material.original_filename}</span><small>{parseStatus === "ready" ? "已解析，可参与需求和大纲" : parseStatus === "empty" ? "未提取文本，生成时读取原文件" : parseStatus === "failed" ? "摘要提取失败，生成时读取原文件" : parseMessage}</small>{excerpt && <p title={excerpt}>摘要：{excerpt}</p>}</div><button type="button" aria-label={`删除 ${material.original_filename}`} onClick={() => props.onDeleteMaterial(material.id)}><Trash2 size={14} /></button></div>; })}</div> : <p className="zc-material-empty">添加 PDF、Office 文档、表格或文本后，系统会先提取可用摘要，再把材料交给需求、大纲和页面生成。</p>}</section>;
+}
+
+function ModeFieldsPanel(props: { stageTag: string; heading: string; description: string; fields: Array<SkillModeField & { rows?: number }>; requirements: Record<string, unknown>; setRequirements: (value: Record<string, unknown>) => void; materials: ProjectMaterial[]; materialUploading: boolean; onUploadMaterials: (files: File[]) => void; onDeleteMaterial: (materialId: string) => void; onConfirm: () => void; busy: boolean; confirmLabel: string; confirmHint: string }) {
+  const update = (key: string, value: string) => props.setRequirements({ ...props.requirements, [key]: value });
+  return <div className="zc-stage-page"><header className="zc-stage-page-head"><div><span>{props.stageTag}</span><h1>{props.heading}</h1><p>{props.description}</p></div><small>项目自动保存</small></header><section className="zc-requirement-card"><header><div><FileText size={18} /><strong>创作要素</strong></div><span>可编辑</span></header><div className="zc-requirement-grid">{props.fields.map((field) => { const value = String(props.requirements[field.name] ?? ""); const wide = field.wide || field.type === "textarea"; return <label key={field.name} className={wide ? "is-wide" : ""}><span>{field.label}</span>{field.type === "textarea" ? <textarea rows={field.rows || 4} value={value} placeholder={field.placeholder} maxLength={field.max_length ?? undefined} onChange={(event) => update(field.name, event.target.value)} /> : field.type === "select" ? <select value={value || field.options[0] || ""} onChange={(event) => update(field.name, event.target.value)}>{field.options.map((option) => <option key={option} value={option}>{option}</option>)}</select> : <input value={value} placeholder={field.placeholder} maxLength={field.max_length ?? undefined} onChange={(event) => update(field.name, event.target.value)} />}</label>; })}</div></section><MaterialCard materials={props.materials} materialUploading={props.materialUploading} onUploadMaterials={props.onUploadMaterials} onDeleteMaterial={props.onDeleteMaterial} /><div className="zc-stage-actions"><span><Sparkles size={15} />{props.confirmHint}</span><button className="zc-primary zc-primary-large" type="button" onClick={props.onConfirm} disabled={props.busy}>{props.confirmLabel}<ChevronRight size={16} /></button></div></div>;
+}
+
 function RequirementsPanel(props: { requirements: Record<string, unknown>; setRequirements: (value: Record<string, unknown>) => void; showPageRange: boolean; notesEnabled: boolean; setNotesEnabled: (value: boolean) => void; materials: ProjectMaterial[]; materialUploading: boolean; onUploadMaterials: (files: File[]) => void; onDeleteMaterial: (materialId: string) => void; onConfirm: () => void; busy: boolean; hasOutline: boolean }) {
   const update = (key: string, value: string) => props.setRequirements({ ...props.requirements, [key]: value });
-  return <div className="zc-stage-page"><header className="zc-stage-page-head"><div><span>01 · 需求梳理</span><h1>确认这次要讲清楚什么</h1><p>结构化需求会作为后续大纲和生成任务的共同上下文。</p></div><small>项目自动保存</small></header><section className="zc-requirement-card"><header><div><FileText size={18} /><strong>结构化 PPT 需求单</strong></div><span>可编辑</span></header><div className="zc-requirement-grid"><label className="is-wide"><span>PPT 主题</span><input value={String(props.requirements.topic || "")} onChange={(event) => update("topic", event.target.value)} /></label><label><span>使用场景</span><input value={String(props.requirements.scenario || "")} onChange={(event) => update("scenario", event.target.value)} /></label><label><span>目标受众</span><input value={String(props.requirements.audience || "")} onChange={(event) => update("audience", event.target.value)} /></label>{props.showPageRange && <label><span>页数范围</span><select value={String(props.requirements.page_range || pageRangeOptions[2])} onChange={(event) => update("page_range", event.target.value)}>{pageRangeOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>}<label><span>整体风格</span><input value={String(props.requirements.style || "")} onChange={(event) => update("style", event.target.value)} /></label><label className="is-wide"><span>核心目标</span><textarea rows={4} value={String(props.requirements.objective || "")} onChange={(event) => update("objective", event.target.value)} /></label></div><footer><div><strong>生成每页讲解词</strong><span>在大纲中保存讲解重点，并在生成时提供给模型。</span></div><button className={`zc-switch ${props.notesEnabled ? "is-on" : ""}`} type="button" aria-pressed={props.notesEnabled} onClick={() => props.setNotesEnabled(!props.notesEnabled)}><i /></button></footer></section><section className="zc-material-card"><header><div><Upload size={17} /><strong>创作材料</strong><span>{props.materials.length ? `已添加 ${props.materials.length} 份` : "可选"}</span></div><label className="zc-secondary zc-material-upload">{props.materialUploading ? "正在上传…" : "添加材料"}<input type="file" multiple accept=".pdf,.doc,.docx,.docm,.ppt,.pps,.pot,.pptx,.pptm,.ppsx,.ppsm,.xls,.xlsx,.xlsm,.xlsb,.odt,.ods,.odp,.rtf,.epub,.csv,.txt,.md,.markdown,.png,.jpg,.jpeg,.webp" onChange={(event) => { props.onUploadMaterials(Array.from(event.target.files || [])); event.target.value = ""; }} disabled={props.materialUploading} /></label></header>{props.materials.length ? <div className="zc-material-list">{props.materials.map((material) => { const metadata = material.metadata || {}; const parseStatus = String(metadata.parse_status || "deferred"); const parseMessage = String(metadata.parse_message || (material.status === "ready" ? "已保存，生成时解析" : material.error || "处理失败")); const excerpt = String(metadata.text_excerpt || ""); return <div className="zc-material-item" key={material.id}><div className="zc-material-item-main"><span title={material.original_filename}>{material.original_filename}</span><small>{parseStatus === "ready" ? "已解析，可参与需求和大纲" : parseStatus === "empty" ? "未提取文本，生成时读取原文件" : parseStatus === "failed" ? "摘要提取失败，生成时读取原文件" : parseMessage}</small>{excerpt && <p title={excerpt}>摘要：{excerpt}</p>}</div><button type="button" aria-label={`删除 ${material.original_filename}`} onClick={() => props.onDeleteMaterial(material.id)}><Trash2 size={14} /></button></div>; })}</div> : <p className="zc-material-empty">添加 PDF、Office 文档、表格或文本后，系统会先提取可用摘要，再把材料交给需求、大纲和页面生成。</p>}</section><div className="zc-stage-actions"><span><Sparkles size={15} />{props.hasOutline ? "需求已保存，可继续查看现有大纲" : "需求确认后将生成一份可编辑的大纲草稿"}</span><button className="zc-primary zc-primary-large" type="button" onClick={props.onConfirm} disabled={props.busy}>{props.hasOutline ? "下一步：查看大纲" : "下一步：设计大纲"}<ChevronRight size={16} /></button></div></div>;
+  return <div className="zc-stage-page"><header className="zc-stage-page-head"><div><span>01 · 需求梳理</span><h1>确认这次要讲清楚什么</h1><p>结构化需求会作为后续大纲和生成任务的共同上下文。</p></div><small>项目自动保存</small></header><section className="zc-requirement-card"><header><div><FileText size={18} /><strong>结构化 PPT 需求单</strong></div><span>可编辑</span></header><div className="zc-requirement-grid"><label className="is-wide"><span>PPT 主题</span><input value={String(props.requirements.topic || "")} onChange={(event) => update("topic", event.target.value)} /></label><label><span>使用场景</span><input value={String(props.requirements.scenario || "")} onChange={(event) => update("scenario", event.target.value)} /></label><label><span>目标受众</span><input value={String(props.requirements.audience || "")} onChange={(event) => update("audience", event.target.value)} /></label>{props.showPageRange && <label><span>页数范围</span><select value={String(props.requirements.page_range || pageRangeOptions[2])} onChange={(event) => update("page_range", event.target.value)}>{pageRangeOptions.map((option) => <option key={option} value={option}>{option}</option>)}</select></label>}<label><span>整体风格</span><input value={String(props.requirements.style || "")} onChange={(event) => update("style", event.target.value)} /></label><label className="is-wide"><span>核心目标</span><textarea rows={4} value={String(props.requirements.objective || "")} onChange={(event) => update("objective", event.target.value)} /></label></div><footer><div><strong>生成每页讲解词</strong><span>在大纲中保存讲解重点，并在生成时提供给模型。</span></div><button className={`zc-switch ${props.notesEnabled ? "is-on" : ""}`} type="button" aria-pressed={props.notesEnabled} onClick={() => props.setNotesEnabled(!props.notesEnabled)}><i /></button></footer></section><MaterialCard materials={props.materials} materialUploading={props.materialUploading} onUploadMaterials={props.onUploadMaterials} onDeleteMaterial={props.onDeleteMaterial} /><div className="zc-stage-actions"><span><Sparkles size={15} />{props.hasOutline ? "需求已保存，可继续查看现有大纲" : "需求确认后将生成一份可编辑的大纲草稿"}</span><button className="zc-primary zc-primary-large" type="button" onClick={props.onConfirm} disabled={props.busy}>{props.hasOutline ? "下一步：查看大纲" : "下一步：设计大纲"}<ChevronRight size={16} /></button></div></div>;
 }
 
 function OutlinePanel(props: { outline: OutlineSlide[]; itemNoun: string; hasTemplateStage: boolean; fieldLabel: (name: string, fallback: string) => string; onEdit: (index: number, key: keyof OutlineSlide, value: string) => void; onMove: (index: number, direction: -1 | 1) => void; onAdd: () => void; onRemove: (index: number) => void; onConfirm: () => void; onRegenerate: () => void; busy: boolean }) {

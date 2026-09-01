@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -25,6 +26,12 @@ RUNTIME_CONFIG_NAME = "gongwen-runtime.json"
 # Self-generated or host-provisioned files that must never count as a
 # continuation change.
 _SNAPSHOT_EXCLUDES = {"validation", "font-cache", RUNTIME_CONFIG_NAME, "fontconfig.conf"}
+# Must match the sentinels the API writes into typeset-mode job prompts.
+_TYPESET_CONTENT_BEGIN_RE = r"^-----公文正文开始[^\n]*-----$"
+_TYPESET_CONTENT_END = "-----公文正文结束-----"
+_FIDELITY_SAMPLE_SIZE = 20
+_FIDELITY_MIN_SENTENCE_CHARS = 10
+_FIDELITY_MIN_RATIO = 0.9
 
 
 def job_project_workspace(continue_mode: bool = False) -> Path:
@@ -104,6 +111,72 @@ def emit_artifacts(ctx: SkillContext) -> None:
             emit("artifact", kind="png", path=f"preview/{png.name}")
 
 
+def _normalized_text(value: str) -> str:
+    """Collapse every whitespace so layout-only differences never compare."""
+
+    return re.sub(r"\s+", "", value)
+
+
+def _typeset_source_text(ctx: SkillContext) -> str:
+    """Recover the verbatim source text a typeset job must reproduce."""
+
+    match = re.search(
+        _TYPESET_CONTENT_BEGIN_RE + r"\n(.*?)\n" + re.escape(_TYPESET_CONTENT_END),
+        ctx.prompt,
+        re.DOTALL | re.MULTILINE,
+    )
+    if match:
+        return match.group(1)
+    materials_root = ctx.workspace / "materials"
+    chunks: list[str] = []
+    if materials_root.is_dir():
+        for sidecar in sorted(materials_root.glob("*.extracted.md")):
+            chunks.append(sidecar.read_text(encoding="utf-8", errors="replace"))
+        for pattern in ("*.txt", "*.md"):
+            for path in sorted(materials_root.glob(pattern)):
+                chunks.append(path.read_text(encoding="utf-8-sig", errors="replace"))
+    return "\n".join(chunks)
+
+
+def _fidelity_samples(source: str) -> list[str]:
+    """Pick the longest distinct sentences as the verbatim comparison set."""
+
+    sentences = re.split(r"[。！？!?；;\n]+", source)
+    samples: list[str] = []
+    seen: set[str] = set()
+    for sentence in sentences:
+        text = _normalized_text(sentence)
+        if len(text) < _FIDELITY_MIN_SENTENCE_CHARS or text in seen:
+            continue
+        seen.add(text)
+        samples.append(text)
+    samples.sort(key=len, reverse=True)
+    return samples[:_FIDELITY_SAMPLE_SIZE]
+
+
+def _typeset_fidelity(ctx: SkillContext, docx: Path) -> dict[str, object]:
+    """Verify the exported DOCX reproduces the user's source text verbatim."""
+
+    source = _typeset_source_text(ctx)
+    if not source.strip():
+        return {"checked": False, "note": "未找到可对照的正文来源，跳过逐字校验"}
+    samples = _fidelity_samples(source)
+    if not samples:
+        return {"checked": False, "note": "正文来源过短，跳过逐字校验"}
+    document_text = _normalized_text(_docx_text(docx))
+    missing = [sample for sample in samples if sample not in document_text]
+    hits = len(samples) - len(missing)
+    ratio = hits / len(samples)
+    return {
+        "checked": True,
+        "samples": len(samples),
+        "hits": hits,
+        "ratio": round(ratio, 3),
+        "passed": ratio >= _FIDELITY_MIN_RATIO,
+        "missing_sample": missing[0][:60] if missing else "",
+    }
+
+
 def validate_revision(ctx: SkillContext, baseline: dict[str, str]) -> dict[str, object]:
     """Check the exported docx opens, carries text, and changed for continuations."""
 
@@ -120,6 +193,17 @@ def validate_revision(ctx: SkillContext, baseline: dict[str, str]) -> dict[str, 
     min_chars = int(manifest_validation.get("min_chars") or DEFAULT_MIN_CHARS)
     if docx is not None and char_count < min_chars:
         issues.append(f"正文内容过短（{char_count} 字符，要求不少于 {min_chars}）")
+    # Initial typeset jobs must reproduce the user's text verbatim; chat
+    # refinements legitimately edit content, so only continuations skip this.
+    fidelity: dict[str, object] | None = None
+    if ctx.mode == "typeset" and not ctx.continue_mode and docx is not None:
+        fidelity = _typeset_fidelity(ctx, docx)
+        if fidelity.get("checked") and not fidelity.get("passed"):
+            issues.append(
+                f"排版忠实性校验未通过：源文句子命中率 {fidelity.get('ratio')}"
+                f"（要求不低于 {_FIDELITY_MIN_RATIO}），缺失示例：「{fidelity.get('missing_sample')}」。"
+                "排版模式的正文必须逐字保留。"
+            )
     current = baseline_snapshot(ctx)
     changed = sorted(path for path in set(baseline) | set(current) if baseline.get(path) != current.get(path))
     if ctx.continue_mode and not changed:
@@ -131,6 +215,7 @@ def validate_revision(ctx: SkillContext, baseline: dict[str, str]) -> dict[str, 
         "continuation": ctx.continue_mode,
         "changed_files": changed,
         "char_count": char_count,
+        "fidelity": fidelity,
         "deliverable": docx.relative_to(ctx.workspace).as_posix() if docx else "",
         "checks": [],
         "message": f"{validation_type}校验通过" if passed else f"{validation_type}未生效：{'；'.join(issues)}",
@@ -237,8 +322,8 @@ def _runtime_fontconfig(workspace: Path) -> Path | None:
     return None
 
 
-def _docx_char_count(path: Path) -> int:
-    """Return the visible text length of a docx, or 0 when unreadable."""
+def _docx_text(path: Path) -> str:
+    """Return the visible text of a docx, or "" when unreadable."""
 
     try:
         import zipfile
@@ -246,7 +331,12 @@ def _docx_char_count(path: Path) -> int:
 
         with zipfile.ZipFile(path) as archive:
             root = ElementTree.fromstring(archive.read("word/document.xml"))
-        text = "".join(node.text or "" for node in root.iter() if node.tag.endswith("}t"))
-        return len("".join(text.split()))
+        return "".join(node.text or "" for node in root.iter() if node.tag.endswith("}t"))
     except (OSError, KeyError, zipfile.BadZipFile, ElementTree.ParseError):
-        return 0
+        return ""
+
+
+def _docx_char_count(path: Path) -> int:
+    """Return the visible text length of a docx, or 0 when unreadable."""
+
+    return len(_normalized_text(_docx_text(path)))

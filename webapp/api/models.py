@@ -113,6 +113,9 @@ class Project(Base):
     skill_id: Mapped[str] = mapped_column(
         String(64), default="ppt-master", server_default="ppt-master", index=True
     )
+    # Creation flow chosen at creation for multi-mode skills (draft/typeset…);
+    # None for single-mode skills such as ppt-master.
+    mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     title: Mapped[str] = mapped_column(String(160))
     workspace_relpath: Mapped[str] = mapped_column(String(512), unique=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -253,6 +256,8 @@ class Job(Base):
     skill_id: Mapped[str] = mapped_column(
         String(64), default="ppt-master", server_default="ppt-master", index=True
     )
+    # Immutable snapshot of the project creation mode at submit time.
+    mode: Mapped[str | None] = mapped_column(String(32), nullable=True)
     # Page-scoped refinement jobs must identify the only slide the worker may change.
     target_slide_number: Mapped[int | None] = mapped_column(Integer, nullable=True)
     template_id: Mapped[uuid.UUID | None] = mapped_column(

@@ -557,6 +557,8 @@ def execute_job(self, job_id_text: str) -> None:
             "PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS": str(settings.opencode_idle_timeout_seconds),
             **_provider_environment(),
         }
+        if job.mode:
+            environment["PPTMASTER_JOB_MODE"] = job.mode
         if job.target_slide_number is not None:
             environment["PPTMASTER_TARGET_SLIDE"] = str(job.target_slide_number)
         if template_workspace:

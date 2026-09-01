@@ -28,3 +28,4 @@ class SkillContext:
     continue_mode: bool
     target_slide: int | None
     template_root: str
+    mode: str | None = None

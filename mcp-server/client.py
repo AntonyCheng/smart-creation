@@ -87,11 +87,11 @@ class PlatformClient:
     async def list_skills(self) -> list[dict[str, Any]]:
         return await self._request("GET", "/api/v1/skills")
 
-    async def create_project(self, title: str, skill_id: str = "ppt-master") -> dict[str, Any]:
+    async def create_project(self, title: str, skill_id: str = "ppt-master", mode: str | None = None) -> dict[str, Any]:
         return await self._request(
             "POST",
             "/api/v1/projects",
-            json={"title": title, "skill_id": skill_id, "prompt_snippet_id": None},
+            json={"title": title, "skill_id": skill_id, "mode": mode, "prompt_snippet_id": None},
         )
 
     async def save_requirements(self, project_id: str, requirements: dict[str, Any]) -> dict[str, Any]:

@@ -56,6 +56,7 @@ def _doc_questions(missing: list[str]) -> list[str]:
     labels = {
         "topic": "这份公文的主题或核心事项是什么？",
         "doc_type": "公文文种是什么？（通知、请示、报告、纪要、函等）",
+        "content": "请提供要排版的公文正文内容（可直接粘贴全文）。",
     }
     return [labels[field] for field in missing]
 
@@ -95,6 +96,33 @@ def _doc_generation_prompt(values: dict[str, Any], request: str) -> str:
     return "\n".join(lines)
 
 
+def _doc_typeset_prompt(values: dict[str, Any], content: str) -> str:
+    """Verbatim-typesetting contract for the gongwen typeset mode."""
+
+    lines = [
+        "请按 GB/T 9704—2012 党政机关公文格式将下面的公文内容排版生成 DOCX 文件。",
+        "忠实性要求：正文文字必须逐字保留，不得改写、增删、润色或纠错；"
+        "只允许划分段落结构与层级、设置版式要素。"
+        "内容中没有提供的版式事实一律使用XX占位，不得编造。",
+        f"文种：{values['doc_type']}",
+    ]
+    if values.get("issuer"):
+        lines.append(f"发文机关标志（红头）：{values['issuer']}")
+    if values.get("recipient"):
+        lines.append(f"主送机关：{values['recipient']}")
+    if values.get("objective"):
+        lines.append(f"补充要求：{values['objective']}")
+    lines.extend([
+        "",
+        "-----公文正文开始（以下内容必须逐字排版，不得改写）-----",
+        content,
+        "-----公文正文结束-----",
+        "",
+        "完成后按 skill 流程完成结构检查与渲染检查，并输出对话审核单。",
+    ])
+    return "\n".join(lines)
+
+
 def _job_by_id(jobs: list[dict[str, Any]], job_id: str) -> dict[str, Any] | None:
     return next((job for job in jobs if str(job.get("id")) == job_id), None)
 
@@ -105,11 +133,12 @@ async def _submit_task(
     prompt: str,
     conversation_id: str | None,
     submitted_message: str,
+    mode: str | None = None,
 ) -> dict[str, Any]:
     """Shared submission path: create project, persist requirements, queue job."""
 
     try:
-        project = await client.create_project(str(requirements["topic"]), skill_id=skill_id)
+        project = await client.create_project(str(requirements["topic"]), skill_id=skill_id, mode=mode)
         project_id = str(project["id"])
         await client.save_requirements(project_id, requirements)
         job = await client.create_job(project_id, prompt)
@@ -181,10 +210,17 @@ async def create_doc_task(
     objective: str = "",
     style: str = "",
     notes: str = "",
+    mode: str = "draft",
+    content: str = "",
     conversation_id: str | None = None,
 ) -> dict[str, Any]:
-    """从自然语言需求收集信息；缺文种时返回追问，完整后异步提交公文写作任务（GB/T 9704 DOCX）。"""
+    """从自然语言需求收集信息；缺文种时返回追问，完整后异步提交公文任务（GB/T 9704 DOCX）。
+
+    mode="draft"（默认）：按主题起草完整公文。mode="typeset"：排版已有内容，
+    必须提供 content（公文正文全文，排版时逐字保留），此时 topic/doc_type 仍需提供。
+    """
     original = _clean(request)
+    doc_mode = "typeset" if str(mode).strip().lower() in {"typeset", "排版", "format"} else "draft"
     values: dict[str, Any] = {
         "topic": _clean(topic, 160),
         "doc_type": _clean(doc_type, 32),
@@ -196,6 +232,33 @@ async def create_doc_task(
     }
     if not original and not values["topic"]:
         return {"status": "needs_clarification", "missing_fields": ["topic"], "questions": _doc_questions(["topic"])}
+    if doc_mode == "typeset":
+        body = _clean(content, 16_000)
+        if not body:
+            return {
+                "status": "needs_clarification",
+                "missing_fields": ["content"],
+                "questions": _doc_questions(["content"]),
+                "conversation_id": conversation_id,
+                "message": "排版模式需要公文正文内容，请补充后再次调用 create_doc_task。",
+            }
+        missing = [field for field in DOC_REQUIRED_FIELDS if not values[field]]
+        if missing:
+            return {
+                "status": "needs_clarification",
+                "missing_fields": missing,
+                "questions": _doc_questions(missing),
+                "conversation_id": conversation_id,
+                "message": "请补充这些信息后再次调用 create_doc_task。",
+            }
+        return await _submit_task(
+            "gongwen",
+            values,
+            _doc_typeset_prompt(values, body),
+            conversation_id,
+            "公文排版任务已异步提交，正文将逐字排版，请使用 get_task_status 查询。",
+            mode=doc_mode,
+        )
     missing = [field for field in DOC_REQUIRED_FIELDS if not values[field]]
     if missing:
         return {
@@ -211,6 +274,7 @@ async def create_doc_task(
         _doc_generation_prompt(values, original),
         conversation_id,
         "公文写作任务已异步提交，请使用 get_task_status 查询。",
+        mode=doc_mode,
     )
 
 

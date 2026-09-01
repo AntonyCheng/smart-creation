@@ -101,8 +101,11 @@ from .schemas import (
     SkillOut,
     SkillFrontendOut,
     SkillFeaturesOut,
+    SkillModeFieldOut,
+    SkillModeOut,
     SkillOutlineFieldOut,
     SkillOutlineOut,
+    SkillRefinementOut,
     SkillStageOut,
     TemplateOut,
     TemplateRenameIn,
@@ -339,6 +342,51 @@ def _refinement_history_prompt(messages: list[PageRefinementMessage]) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
+_TYPESET_CONTENT_BEGIN = "-----公文正文开始（以下内容必须逐字排版，不得改写）-----"
+_TYPESET_CONTENT_END = "-----公文正文结束-----"
+_TYPESET_FIELD_LABELS = (
+    ("title", "公文标题"),
+    ("doc_type", "文种"),
+    ("issuer_mark", "发文机关标志（红头）"),
+    ("document_number", "发文字号"),
+    ("recipient", "主送机关"),
+    ("date", "成文日期"),
+    ("seal_requirement", "印章要求"),
+    ("signatory", "签发人"),
+    ("copy_to", "抄送机关"),
+    ("printing_authority", "印发机关"),
+    ("print_date", "印发日期"),
+)
+
+
+def _typeset_prompt(requirements: dict, note: str = "") -> str:
+    """Compose the verbatim-typesetting contract for one typeset-mode job.
+
+    Pasted content is wrapped in sentinel lines so the worker's fidelity check
+    can recover the exact source text it must find in the exported DOCX.
+    """
+
+    lines = [
+        "请按 GB/T 9704—2012 党政机关公文格式将本次公文内容排版生成 DOCX 文件。",
+        "忠实性要求：正文文字必须逐字保留，不得改写、增删、润色或纠错；只允许划分段落结构与层级、"
+        "设置版式要素。内容中没有提供的版式事实一律使用 XX 占位，不得编造。",
+    ]
+    for key, label in _TYPESET_FIELD_LABELS:
+        value = str(requirements.get(key) or "").strip()
+        if value:
+            lines.append(f"{label}：{value}")
+    content = str(requirements.get("content") or "").strip()
+    if content:
+        lines.extend(["", _TYPESET_CONTENT_BEGIN, content, _TYPESET_CONTENT_END])
+    if note:
+        lines.extend(["", f"用户补充：{note.strip()[:4_000]}"])
+    lines.extend([
+        "若材料清单中的文档是本次排版正文来源，请优先读取其预提取 Markdown 并逐字排版全部内容。",
+        "完成后按 skill 流程完成结构检查与渲染检查，并输出对话审核单。",
+    ])
+    return "\n".join(lines)
+
+
 def _parse_outline_response(raw: str, topic: str, skill_id: str = "ppt-master") -> list[dict[str, str]]:
     """Parse strict JSON or a JSON code block returned by an OpenAI-compatible model."""
 
@@ -539,7 +587,7 @@ async def _generate_outline_with_model(
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "MODEL_UNAVAILABLE: 默认模型暂时不可用，请检查模型设置或稍后重试。") from exc
 
 
-def _parse_refinement_intent_response(raw: str, message: str) -> dict[str, object]:
+def _parse_refinement_intent_response(raw: str, message: str, scope: str = "page") -> dict[str, object]:
     """Parse and constrain the classifier's strict JSON response."""
 
     candidate = raw.strip()
@@ -563,15 +611,32 @@ def _parse_refinement_intent_response(raw: str, message: str) -> dict[str, objec
     normalized = str(decoded.get("normalized_request") or message).strip()[:4_000]
     reply = str(decoded.get("reply") or "").strip()[:800]
     question = str(decoded.get("clarification_question") or "").strip()[:800]
+    document = scope == "document"
     if action == "modify_current_slide" and confidence < 0.8:
         action = "ask_clarification"
-        question = question or "我不太确定你的修改目标。请说明要调整的页面元素和期望效果。"
+        question = question or (
+            "我不太确定你要修改公文的哪一部分。请说明位置和期望效果。"
+            if document
+            else "我不太确定你的修改目标。请说明要调整的页面元素和期望效果。"
+        )
     if action == "ask_clarification" and not question:
-        question = "你希望修改当前页的哪一部分？请说明对象和期望效果。"
+        question = (
+            "你希望修改这份公文的哪一部分？请说明位置和期望效果。"
+            if document
+            else "你希望修改当前页的哪一部分？请说明对象和期望效果。"
+        )
     if action == "answer_only" and not reply:
-        reply = "我可以帮你讨论当前页面，也可以根据明确要求提交 PPT 修改。"
+        reply = (
+            "我可以帮你讨论这份公文，也可以按你的要求提交修改。"
+            if document
+            else "我可以帮你讨论当前页面，也可以根据明确要求提交 PPT 修改。"
+        )
     if action == "unsupported" and not reply:
-        reply = "当前 AI 页面助手只负责修改选中的这一页，请描述具体的页面调整要求。"
+        reply = (
+            "当前公文助手只负责修改这份公文，请描述具体的修改要求。"
+            if document
+            else "当前 AI 页面助手只负责修改选中的这一页，请描述具体的页面调整要求。"
+        )
     return {
         "action": action,
         "confidence": confidence,
@@ -586,26 +651,49 @@ async def _classify_refinement_intent(
     slide_title: str,
     message: str,
     history: list[PageRefinementMessage],
+    scope: str = "page",
 ) -> dict[str, object]:
-    """Route every page-chat message through the model when it is available."""
+    """Route every chat message through the model when it is available."""
 
     credentials = await _active_model_credentials(db)
     if not credentials:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "MODEL_NOT_CONFIGURED: 管理员尚未配置并验证默认模型。")
     history_prompt = _refinement_history_prompt(history)
+    document = scope == "document"
+    if document:
+        scope_rules = (
+            "你是当前公文写作助手，负责理解用户对这份已生成公文的修改意图并进行自然对话。\n"
+            "每一条输入都必须先进行语义判断，不要因为命中关键词就机械分类。你只负责意图路由和回复，不要直接执行修改。\n"
+            f"当前文档：{slide_title.strip()[:200]}\n"
+            f"{history_prompt}\n"
+            f"本轮用户输入：{message.strip()[:4_000]}\n\n"
+            "action 只能是："
+            "modify_current_slide（明确要求修改这份公文的内容、措辞、结构或格式）、"
+            "ask_clarification（可能想修改，但位置、范围或效果不清楚）、"
+            "answer_only（问候、身份问题、功能咨询、公文写作知识问答或闲聊）、"
+            "unsupported（要求导出文件、新建公文、管理项目或超出当前公文助手能力）。"
+            "只有用户明确表达修改这份公文的目标和要求时，才能使用 modify_current_slide；"
+            "不能因为用户提到公文或某个词就直接创建修改任务。"
+        )
+        system_prompt = "你是当前公文写作助手。请先理解语义，再决定是否需要修改这份公文；对普通对话要自然回答。只返回严格 JSON 对象，不执行任何修改。"
+    else:
+        scope_rules = (
+            "你是当前 PPT 页面助手，负责理解用户意图并进行自然对话。\n"
+            "每一条输入都必须先进行语义判断，不要因为命中关键词就机械分类。你只负责意图路由和回复，不要执行 PPT 修改。\n"
+            f"当前页面：{slide_title.strip()[:200]}\n"
+            f"{history_prompt}\n"
+            f"本轮用户输入：{message.strip()[:4_000]}\n\n"
+            "action 只能是："
+            "modify_current_slide（明确要求修改当前选中的这一页）、"
+            "ask_clarification（可能想修改，但对象、范围或效果不清楚）、"
+            "answer_only（问候、身份问题、功能咨询、闲聊或普通问题）、"
+            "unsupported（要求修改其他页面、导出文件、管理项目或超出当前页助手能力）。"
+            "只有用户明确表达页面修改目标和操作时，才能使用 modify_current_slide；"
+            "不能因为用户提到 PPT、页面或某个元素就直接创建修改任务。"
+        )
+        system_prompt = "你是当前 PPT 页面助手。请先理解语义，再决定是否需要修改当前页；对普通对话要自然回答。只返回严格 JSON 对象，不执行任何 PPT 修改。"
     prompt = (
-        "你是当前 PPT 页面助手，负责理解用户意图并进行自然对话。\n"
-        "每一条输入都必须先进行语义判断，不要因为命中关键词就机械分类。你只负责意图路由和回复，不要执行 PPT 修改。\n"
-        f"当前页面：{slide_title.strip()[:200]}\n"
-        f"{history_prompt}\n"
-        f"本轮用户输入：{message.strip()[:4_000]}\n\n"
-        "action 只能是："
-        "modify_current_slide（明确要求修改当前选中的这一页）、"
-        "ask_clarification（可能想修改，但对象、范围或效果不清楚）、"
-        "answer_only（问候、身份问题、功能咨询、闲聊或普通问题）、"
-        "unsupported（要求修改其他页面、导出文件、管理项目或超出当前页助手能力）。"
-        "只有用户明确表达页面修改目标和操作时，才能使用 modify_current_slide；"
-        "不能因为用户提到 PPT、页面或某个元素就直接创建修改任务。"
+        f"{scope_rules}"
         "对 answer_only 和 unsupported，reply 必须是结合当前助手身份和上下文生成的自然中文回复，"
         "不能声称已经修改或提交任务；对 ask_clarification，clarification_question 要明确追问缺失信息。"
         "confidence 为 0 到 1 的数字。只返回严格 JSON 对象，不要 Markdown。"
@@ -619,9 +707,9 @@ async def _classify_refinement_intent(
             api_key,
             model_id,
             prompt,
-            "你是当前 PPT 页面助手。请先理解语义，再决定是否需要修改当前页；对普通对话要自然回答。只返回严格 JSON 对象，不执行任何 PPT 修改。",
+            system_prompt,
         )
-        return _parse_refinement_intent_response(raw, message)
+        return _parse_refinement_intent_response(raw, message, scope)
     except (OSError, URLError, TimeoutError, ValueError, json.JSONDecodeError, HTTPException, RuntimeError) as exc:
         logger.warning("Refinement intent classification failed: %s", exc)
         raise HTTPException(status.HTTP_502_BAD_GATEWAY, "MODEL_UNAVAILABLE: 页面助手模型暂时不可用，请稍后重试。") from exc
@@ -727,14 +815,48 @@ def _project_out(project: Project) -> ProjectOut:
         id=project.id,
         title=project.title,
         skill_id=project.skill_id,
+        mode=project.mode,
         created_at=project.created_at,
         updated_at=project.updated_at,
     )
 
 
+def _skill_mode(manifest: dict, mode: str | None) -> dict | None:
+    """Return the project's creation-mode definition, or None for single-mode skills."""
+
+    modes = (manifest.get("frontend") or {}).get("modes") or []
+    if not modes:
+        return None
+    wanted = mode or next((entry.get("id") for entry in modes if entry.get("id")), None)
+    return next((entry for entry in modes if entry.get("id") == wanted), None)
+
+
+_LEGACY_STAGES = {"requirements", "outline", "template", "generating", "preview"}
+
+
+def _allowed_stages(manifest: dict, mode: str | None) -> set[str]:
+    """Whitelist creative stages from the manifest, falling back to the legacy set."""
+
+    mode_definition = _skill_mode(manifest, mode)
+    stages = (mode_definition or {}).get("stages")
+    if stages is None:
+        stages = (manifest.get("frontend") or {}).get("stages") or []
+    ids = {str(stage.get("id")) for stage in stages if isinstance(stage, dict) and stage.get("id")}
+    return ids or _LEGACY_STAGES
+
+
+def _refinement_capable(manifest: dict) -> bool:
+    """Whether the skill supports post-generation chat refinement at all."""
+
+    features = manifest.get("features") or {}
+    return bool(features.get("page_refinement") or features.get("document_refinement"))
+
+
 def _skill_out(manifest: dict) -> SkillOut:
     frontend = manifest.get("frontend") or {}
     outline = frontend.get("outline") or {}
+    refinement = frontend.get("refinement") or {}
+    document_refinement = bool((manifest.get("features") or {}).get("document_refinement"))
     return SkillOut(
         id=manifest["skill_id"],
         display_name=manifest.get("display_name", manifest["skill_id"]),
@@ -752,6 +874,14 @@ def _skill_out(manifest: dict) -> SkillOut:
             quick_starts=frontend.get("quick_starts", []),
             preview_kinds=frontend.get("preview_kinds") or ["svg"],
             stages=[SkillStageOut(**stage) for stage in frontend.get("stages", [])],
+            modes=[SkillModeOut(**mode) for mode in frontend.get("modes", [])],
+            refinement=SkillRefinementOut(
+                scope=str(refinement.get("scope") or ("document" if document_refinement else "page")),
+                assistant_name=refinement.get("assistant_name", "AI 页面助手"),
+                scope_label=refinement.get("scope_label", "当前页"),
+                context_hint=refinement.get("context_hint", "只会修改当前页，其他页面保持不变。"),
+                empty_hint=refinement.get("empty_hint", "告诉我想如何修改当前页…"),
+            ),
             outline=SkillOutlineOut(
                 item_label=outline.get("item_label", "项"),
                 generator_prompt_key=outline.get("generator_prompt_key"),
@@ -965,6 +1095,7 @@ def _job_out(job: Job) -> JobOut:
         base_job_id=job.base_job_id,
         resumed_by_job_id=job.resumed_by_job_id,
         skill_id=job.skill_id,
+        mode=job.mode,
         target_slide_number=job.target_slide_number,
         template_id=job.template_id,
         template_name=job.template_name,
@@ -1658,6 +1789,17 @@ async def create_project(
 
     title = payload.title.strip()
     skill = _registered_skill(payload.skill_id)
+    # The creation mode is validated against the manifest and then frozen on
+    # the project, mirroring the skill_id binding.
+    modes = (skill.get("frontend") or {}).get("modes") or []
+    mode: str | None = payload.mode
+    if modes:
+        if not mode:
+            mode = next((entry.get("id") for entry in modes if entry.get("id")), None)
+        if not mode or mode not in {entry.get("id") for entry in modes}:
+            raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "未知的创作模式")
+    elif mode:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "该创作类型不支持选择模式")
     snippet: PromptSnippet | None = None
     if payload.prompt_snippet_id is not None:
         snippet = (
@@ -1674,7 +1816,7 @@ async def create_project(
         if snippet is None:
             raise HTTPException(status.HTTP_404_NOT_FOUND, "创作预设不存在或已不可用")
 
-    project = Project(owner_id=user.id, title=title, skill_id=skill["skill_id"], workspace_relpath="pending")
+    project = Project(owner_id=user.id, title=title, skill_id=skill["skill_id"], mode=mode, workspace_relpath="pending")
     db.add(project)
     await db.flush()
     project.workspace_relpath = f"{user.id}/{project.id}"
@@ -2421,12 +2563,15 @@ async def update_project_creative_state(
         state = ProjectCreativeState(project_id=project.id)
         db.add(state)
     if payload.stage is not None:
-        if payload.stage not in {"requirements", "outline", "template", "generating", "preview"}:
+        if payload.stage not in _allowed_stages(_registered_skill(project.skill_id), project.mode):
             raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "未知的创作阶段")
         state.stage = payload.stage
     if payload.requirements is not None:
         state.requirements = payload.requirements
     if payload.outline is not None:
+        mode_definition = _skill_mode(_registered_skill(project.skill_id), project.mode)
+        if mode_definition is not None and mode_definition.get("id") != "draft":
+            raise HTTPException(status.HTTP_409_CONFLICT, "当前创作模式不支持编辑大纲")
         state.outline = _validate_outline_items(
             _registered_skill(project.skill_id), payload.outline
         )
@@ -2453,6 +2598,10 @@ async def generate_project_creative_outline(
         state = ProjectCreativeState(project_id=project.id)
         db.add(state)
         await db.flush()
+    skill_manifest = _registered_skill(project.skill_id)
+    mode_definition = _skill_mode(skill_manifest, project.mode)
+    if mode_definition is not None and mode_definition.get("id") != "draft":
+        raise HTTPException(status.HTTP_409_CONFLICT, "当前创作模式不生成大纲，请直接确认内容后生成")
     if payload.requirements is not None:
         state.requirements = payload.requirements
     requirements = dict(state.requirements or {})
@@ -2543,6 +2692,7 @@ async def create_job(
             status.HTTP_503_SERVICE_UNAVAILABLE,
             "MODEL_NOT_CONFIGURED: 管理员尚未配置并验证默认模型。",
         )
+    skill = _registered_skill(project.skill_id)
     if payload.model and payload.model.strip() != active_model.model_id:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "模型由管理员统一配置，不能在任务中单独选择")
     model = active_model.model_id
@@ -2633,6 +2783,19 @@ async def create_job(
             status.HTTP_400_BAD_REQUEST,
             "页面精修必须基于当前已完成的演示文稿。",
         )
+    # Document-scoped chat refinement (公文): a conversation message without a
+    # slide target revises the whole delivered document from its last job.
+    doc_refinement = bool(payload.conversation_message) and payload.target_slide_number is None
+    if doc_refinement:
+        if not _skill_feature(skill, "document_refinement"):
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "该创作类型不支持对话修改公文")
+        if base_job is None:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "对话修改必须基于已生成的公文。")
+    history_number = (
+        payload.target_slide_number
+        if payload.target_slide_number is not None
+        else (0 if doc_refinement else None)
+    )
     template: Template | None = None
     template_root: str | None = None
     if payload.template_id:
@@ -2658,13 +2821,21 @@ async def create_job(
         if not template_root:
             raise HTTPException(status.HTTP_409_CONFLICT, "所选模板缺少可用的模板工作区。")
     creative_state = await db.get(ProjectCreativeState, locked_project.id)
-    job_prompt = _outline_prompt(payload.prompt.strip(), creative_state) if base_job is None else payload.prompt.strip()
-    if payload.target_slide_number is not None:
+    mode_definition = _skill_mode(skill, locked_project.mode)
+    typeset_mode = bool(mode_definition and mode_definition.get("id") == "typeset")
+    if base_job is None:
+        if typeset_mode:
+            job_prompt = _typeset_prompt(dict(creative_state.requirements or {}), payload.prompt.strip())
+        else:
+            job_prompt = _outline_prompt(payload.prompt.strip(), creative_state)
+    else:
+        job_prompt = payload.prompt.strip()
+    if history_number is not None:
         history_stmt = (
             select(PageRefinementMessage)
             .where(
                 PageRefinementMessage.project_id == locked_project.id,
-                PageRefinementMessage.slide_number == payload.target_slide_number,
+                PageRefinementMessage.slide_number == history_number,
             )
             .order_by(PageRefinementMessage.message_order.desc())
             .limit(8)
@@ -2681,6 +2852,14 @@ async def create_job(
             .order_by(ProjectMaterial.created_at.asc())
         )
     ).scalars().all()
+    if typeset_mode and base_job is None:
+        has_content = bool(str((creative_state.requirements or {}).get("content") or "").strip())
+        if not has_content and not project_materials:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                "请先录入公文正文或上传内容文件，再生成排版公文。",
+            )
+        job_prompt = f"{job_prompt}\n\n本任务为公文排版：材料清单中的文档即排版正文来源，必须逐字排版其全部内容。"
     job_prompt = f"{job_prompt}{_material_prompt_context(project_materials)}"
     if len(job_prompt) > 20_000:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "确认的大纲内容过长，请精简后再生成")
@@ -2688,6 +2867,7 @@ async def create_job(
         project_id=locked_project.id,
         base_job_id=base_job.id if base_job else None,
         skill_id=locked_project.skill_id,
+        mode=locked_project.mode,
         target_slide_number=payload.target_slide_number,
         template_id=template.id if template else (base_job.template_id if resuming_cancelled and base_job else None),
         template_name=template.name if template else (base_job.template_name if resuming_cancelled and base_job else None),
@@ -2702,12 +2882,12 @@ async def create_job(
     await db.flush()
     if payload.resume_from_cancelled and base_job and base_job.status is JobStatus.CANCELLED:
         base_job.resumed_by_job_id = job.id
-    if payload.target_slide_number is not None and payload.conversation_message:
+    if history_number is not None and payload.conversation_message:
         db.add(
             PageRefinementMessage(
                 project_id=locked_project.id,
                 job_id=job.id,
-                slide_number=payload.target_slide_number,
+                slide_number=history_number,
                 role="user",
                 content=payload.conversation_message.strip(),
                 client_message_id=payload.client_message_id,
@@ -2810,10 +2990,13 @@ async def classify_refinement_intent(
     project: Project = Depends(get_owned_project),
     db: AsyncSession = Depends(get_db),
 ) -> PageRefinementIntentOut:
-    """Classify a page-chat message before it can create a PPT modification job."""
+    """Classify a chat message before it can create a refinement job."""
 
-    if not _skill_feature(_registered_skill(project.skill_id), "page_refinement"):
-        raise HTTPException(status.HTTP_409_CONFLICT, "该创作类型不支持页面精修对话")
+    skill_manifest = _registered_skill(project.skill_id)
+    if not _refinement_capable(skill_manifest):
+        raise HTTPException(status.HTTP_409_CONFLICT, "该创作类型不支持对话修改")
+    if payload.slide_number == 0 and not _skill_feature(skill_manifest, "document_refinement"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "该创作类型不支持全文对话修改")
     if payload.client_message_id:
         existing_user = (
             await db.execute(
@@ -2859,7 +3042,8 @@ async def classify_refinement_intent(
     )
     history = list((await db.execute(history_stmt)).scalars().all())
     history.reverse()
-    result = await _classify_refinement_intent(db, payload.slide_title, payload.message, history)
+    scope = "document" if payload.slide_number == 0 else "page"
+    result = await _classify_refinement_intent(db, payload.slide_title, payload.message, history, scope)
     action = str(result.get("action") or "answer_only")
     reply = str(result.get("reply") or "").strip()
     question = str(result.get("clarification_question") or "").strip()
@@ -2898,10 +3082,12 @@ async def list_refinement_messages(
     project: Project = Depends(get_owned_project),
     db: AsyncSession = Depends(get_db),
 ) -> list[PageRefinementMessageOut]:
-    """Return the persisted AI conversation for one project page."""
+    """Return the persisted AI conversation for one project page or document."""
 
-    if slide_number < 1 or slide_number > 999:
+    if slide_number < 0 or slide_number > 999:
         raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "页面编号无效")
+    if slide_number == 0 and not _skill_feature(_registered_skill(project.skill_id), "document_refinement"):
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, "该创作类型不支持全文对话记录")
     stmt = (
         select(PageRefinementMessage)
         .where(

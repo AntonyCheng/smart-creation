@@ -50,6 +50,7 @@
   "features": {
     "templates": false,
     "page_refinement": false,
+    "document_refinement": true,
     "editor": false,
     "materials_upload": true,
     "resume": true
@@ -67,6 +68,60 @@
       { "id": "generating", "label": "生成公文", "description": "实时生成任务" },
       { "id": "preview", "label": "预览下载", "description": "查看与下载文档" }
     ],
+    "modes": [
+      {
+        "id": "draft",
+        "label": "公文起草",
+        "description": "给出主题与要求，AI 按文种起草完整公文",
+        "stages": [
+          { "id": "requirements", "label": "需求梳理", "description": "确认文种与要求" },
+          { "id": "outline", "label": "提纲设计", "description": "组织公文结构" },
+          { "id": "generating", "label": "生成公文", "description": "实时生成任务" },
+          { "id": "preview", "label": "预览下载", "description": "查看与下载文档" }
+        ],
+        "fields": [
+          { "name": "topic", "label": "公文主题", "type": "text", "required": true, "max_length": 160, "wide": true },
+          { "name": "doc_type", "label": "文种", "type": "select", "options": ["通知", "通报", "请示", "报告", "批复", "函", "纪要", "意见", "决定", "决议", "命令（令）", "公报", "公告", "通告", "议案"], "default": "通知" },
+          { "name": "issuer", "label": "发文机关", "type": "text", "max_length": 160, "placeholder": "留空则在正文中占位" },
+          { "name": "recipient", "label": "主送机关", "type": "text", "max_length": 300 },
+          { "name": "word_range", "label": "字数范围", "type": "text", "max_length": 60, "placeholder": "如 800-1200" },
+          { "name": "draft_depth", "label": "起草深度", "type": "select", "options": ["精简", "标准", "详尽"], "default": "标准" },
+          { "name": "style", "label": "语言风格", "type": "text", "max_length": 160, "default": "规范、庄重、简明" },
+          { "name": "objective", "label": "核心目标与要点", "type": "textarea", "max_length": 2000, "wide": true }
+        ]
+      },
+      {
+        "id": "typeset",
+        "label": "公文排版",
+        "description": "粘贴或上传已有内容，按 GB/T 9704 排出规范版式，正文逐字保留",
+        "stages": [
+          { "id": "content", "label": "内容录入", "description": "粘贴或上传公文内容" },
+          { "id": "format", "label": "版式要素", "description": "确认红头与版记要素" },
+          { "id": "generating", "label": "生成公文", "description": "实时生成任务" },
+          { "id": "preview", "label": "预览下载", "description": "查看与下载文档" }
+        ],
+        "fields": [
+          { "name": "title", "label": "公文标题", "type": "text", "max_length": 160, "wide": true, "placeholder": "留空则从内容中识别" },
+          { "name": "doc_type", "label": "文种", "type": "select", "options": ["通知", "通报", "请示", "报告", "批复", "函", "纪要", "意见", "决定", "决议", "命令（令）", "公报", "公告", "通告", "议案"], "default": "通知" },
+          { "name": "issuer_mark", "label": "发文机关标志（红头）", "type": "text", "max_length": 160, "placeholder": "如 XX单位办公室文件" },
+          { "name": "document_number", "label": "发文字号", "type": "text", "max_length": 120, "placeholder": "如 X政发〔2026〕12号" },
+          { "name": "recipient", "label": "主送机关", "type": "text", "max_length": 300, "wide": true },
+          { "name": "date", "label": "成文日期", "type": "text", "max_length": 60, "placeholder": "如 2026年9月1日，未知则占位" },
+          { "name": "seal_requirement", "label": "印章要求", "type": "select", "options": ["不需要印章", "需要预留盖章位置"], "default": "不需要印章" },
+          { "name": "signatory", "label": "签发人（上行文）", "type": "text", "max_length": 60 },
+          { "name": "copy_to", "label": "抄送机关", "type": "text", "max_length": 300, "wide": true },
+          { "name": "printing_authority", "label": "印发机关", "type": "text", "max_length": 160 },
+          { "name": "print_date", "label": "印发日期", "type": "text", "max_length": 60 }
+        ]
+      }
+    ],
+    "refinement": {
+      "scope": "document",
+      "assistant_name": "AI 公文助手",
+      "scope_label": "全文",
+      "context_hint": "只会修改当前这份公文，未提及的内容保持不变。",
+      "empty_hint": "告诉我想如何修改这份公文…"
+    },
     "outline": {
       "item_label": "部分",
       "generator_prompt_key": "gongwen",
