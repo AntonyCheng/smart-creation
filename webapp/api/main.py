@@ -19,6 +19,7 @@ from urllib.parse import urlsplit
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import UUID
 
+import anydoc
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -821,83 +822,105 @@ def _material_out(material: ProjectMaterial) -> ProjectMaterialOut:
     )
 
 
-_MATERIAL_EXTENSIONS = {".pdf", ".docx", ".pptx", ".xlsx", ".xls", ".csv", ".txt", ".md", ".markdown", ".png", ".jpg", ".jpeg", ".webp"}
+_MATERIAL_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".docm",
+    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+    ".xls", ".xlsx", ".xlsm", ".xlsb",
+    ".odt", ".ods", ".odp",
+    ".rtf", ".epub", ".csv",
+    ".txt", ".md", ".markdown",
+    ".png", ".jpg", ".jpeg", ".webp",
+}
+# Document formats delegated to the bundled anydoc converter. It detects the
+# format from file content, so legacy (.doc/.xls/.ppt) and mislabeled office
+# files still parse, and PDF/RTF/EPUB/ODF gain upload-time excerpts.
+_ANYDOC_EXTENSIONS = {
+    ".pdf", ".doc", ".docx", ".docm",
+    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
+    ".xls", ".xlsx", ".xlsm", ".xlsb",
+    ".odt", ".ods", ".odp",
+    ".rtf", ".epub", ".csv",
+}
+_MATERIAL_RAW_TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
 _MATERIAL_MAX_BYTES = 100 * 1024 * 1024
 _MATERIAL_PREVIEW_LIMIT = 12_000
 _MATERIAL_PROMPT_LIMIT = 24_000
+_MATERIAL_SIDECAR_SUFFIX = ".extracted.md"
 
 
 def _material_text_preview(text: str) -> tuple[str, int]:
-    """Normalize extracted text and keep a bounded preview for model context."""
+    """Collapse inline whitespace but keep line structure for model context."""
 
-    normalized = re.sub(r"\s+", " ", text).strip()
+    lines = (re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())
+    normalized = "\n".join(line for line in lines if line)
     return normalized[:_MATERIAL_PREVIEW_LIMIT], len(normalized)
 
 
-def _zip_xml_text(path: Path, names: list[str]) -> str:
-    """Extract visible text from a bounded list of XML members in an Office file."""
+def _read_material_markdown(path: Path, suffix: str) -> str:
+    """Return the full extracted Markdown for one stored material."""
 
-    chunks: list[str] = []
-    with zipfile.ZipFile(path) as archive:
-        for name in names:
-            try:
-                root = ET.fromstring(archive.read(name))
-            except KeyError:
-                continue
-            chunks.extend(value.strip() for value in root.itertext() if value and value.strip())
-    return " ".join(chunks)
+    if suffix in _MATERIAL_RAW_TEXT_EXTENSIONS:
+        return path.read_text(encoding="utf-8-sig", errors="replace")
+    return anydoc.to_markdown(str(path))
 
 
-def _extract_material_metadata(path: Path, suffix: str) -> dict[str, object]:
-    """Extract lightweight text context without adding optional parser dependencies."""
+def _material_sidecar_path(material_path: Path) -> Path:
+    """Resolve the pre-extracted Markdown twin stored beside one material."""
 
-    try:
-        text = ""
-        if suffix in {".txt", ".md", ".markdown", ".csv"}:
-            text = path.read_text(encoding="utf-8-sig", errors="replace")
-        elif suffix == ".docx":
-            text = _zip_xml_text(path, ["word/document.xml"])
-        elif suffix == ".pptx":
-            with zipfile.ZipFile(path) as archive:
-                slide_names = sorted(
-                    name for name in archive.namelist()
-                    if name.startswith("ppt/slides/slide") and name.endswith(".xml")
-                )
-            text = _zip_xml_text(path, slide_names)
-        elif suffix == ".xlsx":
-            with zipfile.ZipFile(path) as archive:
-                names = set(archive.namelist())
-                shared = "xl/sharedStrings.xml" if "xl/sharedStrings.xml" in names else None
-                sheets = sorted(name for name in names if name.startswith("xl/worksheets/sheet") and name.endswith(".xml"))
-            text = _zip_xml_text(path, ([shared] if shared else []) + sheets)
-        else:
-            return {
-                "parse_mode": "deferred",
-                "parse_status": "deferred",
-                "parse_message": "该格式保留原文件，生成任务启动时解析。",
-            }
-        preview, extracted_chars = _material_text_preview(text)
-        if not preview:
-            return {
-                "parse_mode": "inline",
-                "parse_status": "empty",
-                "extracted_chars": 0,
-                "parse_message": "未提取到可检索文本，生成任务仍会读取原文件。",
-            }
+    return material_path.with_suffix(_MATERIAL_SIDECAR_SUFFIX)
+
+
+def _extract_material(path: Path, suffix: str) -> dict[str, object]:
+    """Extract upload-time context via anydoc; extraction never fails an upload.
+
+    A successful document extraction also stores the full Markdown beside the
+    original file so generation jobs can read it instead of re-converting.
+    """
+
+    if suffix not in _ANYDOC_EXTENSIONS and suffix not in _MATERIAL_RAW_TEXT_EXTENSIONS:
+        # Images and unknown reference-only attachments keep the original file.
         return {
-            "parse_mode": "inline",
-            "parse_status": "ready",
-            "extracted_chars": extracted_chars,
-            "text_excerpt": preview,
-            "parse_message": "已提取文本摘要，将参与需求、大纲和页面生成。",
+            "parse_mode": "deferred",
+            "parse_status": "deferred",
+            "parse_message": "该格式保留原文件，生成任务启动时解析。",
         }
-    except (OSError, ValueError, zipfile.BadZipFile, ET.ParseError) as exc:
+    try:
+        text = _read_material_markdown(path, suffix)
+    except Exception as exc:  # noqa: BLE001 - conversion errors degrade to deferred
         logger.warning("Material preview extraction failed for %s: %s", path.name, exc)
+        encrypted = "encrypted" in type(exc).__name__.lower()
         return {
             "parse_mode": "deferred",
             "parse_status": "failed",
-            "parse_message": "摘要提取未完成，生成任务仍会读取原文件。",
+            "parse_message": (
+                "文件已加密或设有打开密码，无法提取内容摘要，生成任务也无法读取该文件。"
+                if encrypted
+                else "摘要提取未完成，生成任务仍会读取原文件。"
+            ),
         }
+    preview, extracted_chars = _material_text_preview(text)
+    if not preview:
+        return {
+            "parse_mode": "inline",
+            "parse_status": "empty",
+            "extracted_chars": 0,
+            "parse_message": "未提取到可检索文本，生成任务仍会读取原文件。",
+        }
+    metadata: dict[str, object] = {
+        "parse_mode": "inline",
+        "parse_status": "ready",
+        "extracted_chars": extracted_chars,
+        "text_excerpt": preview,
+        "parse_message": "已提取文本摘要，将参与需求、大纲和页面生成。",
+    }
+    if suffix in _ANYDOC_EXTENSIONS:
+        sidecar_path = _material_sidecar_path(path)
+        try:
+            sidecar_path.write_text(text, encoding="utf-8")
+            metadata["extracted_md_path"] = f"materials/{sidecar_path.name}"
+        except OSError as exc:
+            logger.warning("Material sidecar write failed for %s: %s", path.name, exc)
+    return metadata
 
 
 def _material_path(project: Project, material: ProjectMaterial) -> Path:
@@ -919,12 +942,19 @@ def _material_prompt_context(materials: list[ProjectMaterial]) -> str:
     preview_budget = _MATERIAL_PROMPT_LIMIT
     for material in materials:
         lines.append(f"- {material.original_filename}（{material.content_type}，{material.size_bytes} bytes，路径：{material.relative_path}）")
+        extracted_md = str((material.meta or {}).get("extracted_md_path") or "").strip()
+        if extracted_md:
+            lines.append(f"  已预提取完整 Markdown（路径：{extracted_md}），请优先直接读取该文件了解全部内容，无需再转换原文件。")
         excerpt = str((material.meta or {}).get("text_excerpt") or "").strip()
         if excerpt and preview_budget > 0:
             excerpt = excerpt[:preview_budget]
             preview_budget -= len(excerpt)
             lines.append(f"  可检索摘要：{excerpt}")
-    lines.append("若材料是 PDF、DOCX、PPTX 或表格，请使用可用的来源转换工具提取完整内容后再规划页面；图片作为参考附件使用。")
+    lines.append(
+        "若某份材料没有预提取 Markdown，可使用容器内置的 anydoc 库把原文件转为 Markdown"
+        "（python3 -c \"import anydoc; print(anydoc.to_markdown('材料路径'))\"）后再规划内容；"
+        "图片作为参考附件使用。"
+    )
     return "\n".join(lines)
 
 
@@ -1694,7 +1724,7 @@ async def upload_project_material(
     original_filename = Path(file.filename or "material").name
     suffix = Path(original_filename).suffix.lower()
     if suffix not in _MATERIAL_EXTENSIONS:
-        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "暂不支持该材料格式，请上传 PDF、DOCX、PPTX、表格、文本或图片。")
+        raise HTTPException(status.HTTP_415_UNSUPPORTED_MEDIA_TYPE, "暂不支持该材料格式，请上传 PDF、Office 文档、表格、文本或图片。")
     material = ProjectMaterial(
         project_id=project.id,
         original_filename=original_filename[:255],
@@ -1728,7 +1758,8 @@ async def upload_project_material(
         material.status = "ready"
         metadata = dict(material.meta or {})
         metadata.update({"stored": True})
-        metadata.update(_extract_material_metadata(destination, suffix))
+        # anydoc conversion is CPU-bound Rust; keep the event loop responsive.
+        metadata.update(await asyncio.to_thread(_extract_material, destination, suffix))
         material.meta = metadata
         project.updated_at = datetime.now(UTC)
         await db.commit()
@@ -1737,6 +1768,7 @@ async def upload_project_material(
     except Exception:
         await db.rollback()
         destination.unlink(missing_ok=True)
+        _material_sidecar_path(destination).unlink(missing_ok=True)
         raise
     finally:
         await file.close()
@@ -1762,6 +1794,7 @@ async def delete_project_material(
     project.updated_at = datetime.now(UTC)
     await db.commit()
     path.unlink(missing_ok=True)
+    _material_sidecar_path(path).unlink(missing_ok=True)
 
 
 @app.get("/api/v1/projects/{project_id}/materials/{material_id}/download")
