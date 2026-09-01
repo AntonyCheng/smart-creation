@@ -1,4 +1,4 @@
-"""Environment-backed configuration for the PPT Master MCP server."""
+"""Environment-backed configuration for the 智创AI助手 MCP server."""
 
 from __future__ import annotations
 

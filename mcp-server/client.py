@@ -1,4 +1,4 @@
-"""Small authenticated HTTP client for the PPT Master public API."""
+"""Authenticated HTTP client for the 智创AI助手 platform API."""
 
 from __future__ import annotations
 
@@ -10,15 +10,15 @@ import httpx
 import config
 
 
-class PptMasterApiError(RuntimeError):
-    """A safe, user-facing error returned by the upstream API."""
+class PlatformApiError(RuntimeError):
+    """A safe, user-facing error returned by the platform API."""
 
     def __init__(self, message: str, status_code: int | None = None) -> None:
         super().__init__(message)
         self.status_code = status_code
 
 
-class PptMasterClient:
+class PlatformClient:
     def __init__(self) -> None:
         self._base_url = config.PPTMASTER_API_URL
         self._cookies: dict[str, str] = {}
@@ -35,16 +35,16 @@ class PptMasterClient:
                         json={"username": config.PPTMASTER_USERNAME, "password": config.PPTMASTER_PASSWORD},
                     )
             except httpx.HTTPError as error:
-                raise PptMasterApiError("无法连接 PPT Master 主项目") from error
+                raise PlatformApiError("无法连接智创AI助手平台") from error
             if response.is_error:
-                raise self._error(response, "主项目登录失败")
+                raise self._error(response, "平台登录失败")
             token = response.cookies.get(config.PPTMASTER_SESSION_COOKIE_NAME)
             if not token:
-                raise PptMasterApiError("主项目登录成功但没有返回会话 Cookie")
+                raise PlatformApiError("平台登录成功但没有返回会话 Cookie")
             self._cookies = {config.PPTMASTER_SESSION_COOKIE_NAME: token}
 
     @staticmethod
-    def _error(response: httpx.Response, fallback: str) -> PptMasterApiError:
+    def _error(response: httpx.Response, fallback: str) -> PlatformApiError:
         message = fallback
         try:
             payload = response.json()
@@ -55,7 +55,7 @@ class PptMasterClient:
                 message = "; ".join(str(item.get("msg", item)) for item in detail)
         except (ValueError, TypeError):
             pass
-        return PptMasterApiError(message, response.status_code)
+        return PlatformApiError(message, response.status_code)
 
     async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         await self._login()
@@ -66,7 +66,7 @@ class PptMasterClient:
             ) as client:
                 response = await client.request(method, f"{self._base_url}{path}", **kwargs)
         except httpx.HTTPError as error:
-            raise PptMasterApiError("无法连接 PPT Master 主项目") from error
+            raise PlatformApiError("无法连接智创AI助手平台") from error
         if response.status_code == 401:
             self._cookies = {}
             await self._login()
@@ -74,18 +74,25 @@ class PptMasterClient:
                 async with httpx.AsyncClient(timeout=config.API_TIMEOUT_SECONDS, cookies=self._cookies) as client:
                     response = await client.request(method, f"{self._base_url}{path}", **kwargs)
             except httpx.HTTPError as error:
-                raise PptMasterApiError("无法连接 PPT Master 主项目") from error
+                raise PlatformApiError("无法连接智创AI助手平台") from error
         if response.is_error:
-            raise self._error(response, "主项目请求失败")
+            raise self._error(response, "平台请求失败")
         if response.status_code == 204:
             return None
         try:
             return response.json()
         except ValueError as error:
-            raise PptMasterApiError("主项目返回了无法解析的响应") from error
+            raise PlatformApiError("平台返回了无法解析的响应") from error
 
-    async def create_project(self, title: str) -> dict[str, Any]:
-        return await self._request("POST", "/api/v1/projects", json={"title": title, "prompt_snippet_id": None})
+    async def list_skills(self) -> list[dict[str, Any]]:
+        return await self._request("GET", "/api/v1/skills")
+
+    async def create_project(self, title: str, skill_id: str = "ppt-master") -> dict[str, Any]:
+        return await self._request(
+            "POST",
+            "/api/v1/projects",
+            json={"title": title, "skill_id": skill_id, "prompt_snippet_id": None},
+        )
 
     async def save_requirements(self, project_id: str, requirements: dict[str, Any]) -> dict[str, Any]:
         return await self._request(
@@ -116,7 +123,7 @@ class PptMasterClient:
             async with httpx.AsyncClient(timeout=max(config.API_TIMEOUT_SECONDS, 120), cookies=self._cookies) as client:
                 response = await client.get(f"{self._base_url}/api/v1/projects/{project_id}/jobs/{job_id}/artifacts/{artifact_id}/download")
         except httpx.HTTPError as error:
-            raise PptMasterApiError("无法连接 PPT Master 主项目") from error
+            raise PlatformApiError("无法连接智创AI助手平台") from error
         if response.is_error:
-            raise self._error(response, "PPTX 产物下载失败")
+            raise self._error(response, "产物下载失败")
         return response.content, response.headers.get("content-type", "application/octet-stream")
