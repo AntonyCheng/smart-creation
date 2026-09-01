@@ -23,7 +23,7 @@ async def get_current_user(
 
     token = request.cookies.get(get_settings().session_cookie_name)
     if not token:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "请先登录")
 
     stmt = (
         select(User)
@@ -34,7 +34,7 @@ async def get_current_user(
     )
     user = (await db.execute(stmt)).scalar_one_or_none()
     if not user:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Authentication required")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "请先登录")
     return user
 
 
@@ -42,7 +42,7 @@ async def require_admin(user: User = Depends(get_current_user)) -> User:
     """Require the application administrator role."""
 
     if user.role not in {UserRole.ADMIN, UserRole.SUPER_ADMIN}:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Administrator role required")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "需要管理员权限")
     return user
 
 
@@ -50,7 +50,7 @@ async def require_super_admin(user: User = Depends(get_current_user)) -> User:
     """Require the platform administrator role for governance operations."""
 
     if user.role is not UserRole.SUPER_ADMIN:
-        raise HTTPException(status.HTTP_403_FORBIDDEN, "Platform administrator role required")
+        raise HTTPException(status.HTTP_403_FORBIDDEN, "需要平台超级管理员权限")
     return user
 
 
@@ -64,5 +64,5 @@ async def get_owned_project(
     stmt = select(Project).where(Project.id == project_id, Project.owner_id == user.id)
     project = (await db.execute(stmt)).scalar_one_or_none()
     if not project:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Project not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "项目不存在")
     return project

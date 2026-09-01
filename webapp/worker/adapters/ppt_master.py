@@ -253,7 +253,7 @@ def prepare_template(ctx: SkillContext) -> str:
         return ""
     selected_template = Path(ctx.template_root)
     if not (selected_template / "templates" / "design_spec.md").is_file():
-        raise AdapterError("Selected template workspace is unavailable")
+        raise AdapterError("所选模板工作区不可用")
     emit("template", message="正在应用所选模板")
     return (
         f"Use the selected PPT Master template workspace at {selected_template} as the exact "

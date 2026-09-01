@@ -20,8 +20,9 @@ from urllib.request import Request as UrlRequest, urlopen
 from uuid import UUID
 
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -130,7 +131,7 @@ def _workspace_path(project: Project) -> Path:
     root = settings.workspace_root.resolve()
     path = (root / project.workspace_relpath).resolve()
     if root not in path.parents:
-        raise RuntimeError("Project workspace is outside WORKSPACE_ROOT")
+        raise RuntimeError("项目工作区越出数据根目录")
     return path
 
 
@@ -140,7 +141,7 @@ def _job_workspace_path(project: Project, job_id: UUID) -> Path:
     project_root = _workspace_path(project)
     path = (project_root / "jobs" / str(job_id)).resolve()
     if project_root not in path.parents:
-        raise RuntimeError("Job workspace is outside the project workspace")
+        raise RuntimeError("任务工作区越出项目边界")
     return path
 
 
@@ -150,7 +151,7 @@ def _template_workspace_path(template: Template) -> Path:
     root = settings.workspace_root.resolve()
     path = (root / template.workspace_relpath).resolve()
     if root not in path.parents:
-        raise RuntimeError("Template workspace is outside WORKSPACE_ROOT")
+        raise RuntimeError("模板工作区越出数据根目录")
     return path
 
 
@@ -236,7 +237,7 @@ def _editor_artifact_path(project: Project, artifact: Artifact) -> Path:
     project_root = _workspace_path(project)
     path = (project_root / artifact.relative_path).resolve()
     if project_root not in path.parents or not path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Artifact file not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "产物文件不存在或已被清理")
     return path
 
 
@@ -968,7 +969,7 @@ async def _get_project_job(
         await db.execute(select(Job).where(Job.id == job_id, Job.project_id == project.id))
     ).scalar_one_or_none()
     if not job:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Job not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "任务不存在")
     return job
 
 
@@ -1015,6 +1016,57 @@ app = FastAPI(
     docs_url="/api/docs" if settings.app_env != "production" else None,
     redoc_url=None,
 )
+
+# Render framework validation errors in Chinese so the browser notices never
+# leak pydantic's English messages. Field names get Chinese labels when known.
+_REQUEST_FIELD_LABELS = {
+    "title": "标题", "topic": "主题", "username": "账号", "password": "密码",
+    "prompt": "需求描述", "skill_id": "创作类型", "email": "邮箱",
+    "display_name": "显示名称", "doc_type": "文种", "issuer": "发文机关",
+    "recipient": "主送机关", "page_range": "页数范围", "style": "风格",
+    "objective": "核心目标", "scenario": "使用场景", "audience": "目标受众",
+    "name": "名称", "content": "内容", "slide_number": "页码",
+    "target_slide_number": "目标页码", "notes": "备注", "kind": "类型",
+    "message": "消息", "category": "分类", "base_url": "接口地址",
+    "api_key": "API Key", "model_id": "模型标识", "slug": "标识",
+    "doc": "文档", "purpose": "目标", "notes_enabled": "讲解词开关",
+}
+_VALIDATION_TEMPLATES = {
+    "missing": "缺少必填字段",
+    "string_too_long": "内容过长（最多 {max_length} 个字符）",
+    "string_too_short": "内容过短（至少 {min_length} 个字符）",
+    "string_pattern_mismatch": "格式不正确",
+    "int_parsing": "应为整数",
+    "float_parsing": "应为数字",
+    "bool_parsing": "应为布尔值",
+    "greater_than_equal": "不能小于 {ge}",
+    "less_than_equal": "不能大于 {le}",
+    "literal_error": "取值不在允许范围内",
+    "value_error": "取值无效",
+    "json_invalid": "请求体不是合法 JSON",
+    "json_type": "请求体字段类型不正确",
+}
+
+
+@app.exception_handler(RequestValidationError)
+async def _request_validation_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    messages: list[str] = []
+    for error in exc.errors():
+        error_type = str(error.get("type", ""))
+        template = _VALIDATION_TEMPLATES.get(error_type, "取值无效")
+        try:
+            detail_text = template.format(**error.get("ctx", {}))
+        except (KeyError, IndexError):
+            detail_text = template
+        locator = ".".join(
+            str(part) for part in error.get("loc", ()) if part not in ("body", "query", "path")
+        )
+        tail = locator.split(".")[-1]
+        label = _REQUEST_FIELD_LABELS.get(tail, "" if tail.isdigit() else tail or "请求")
+        messages.append(f"{label}：{detail_text}" if label else detail_text)
+    return JSONResponse(status_code=422, content={"detail": "；".join(messages) or "请求参数不合规"})
+
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[settings.public_origin],
@@ -1040,7 +1092,7 @@ async def login(payload: LoginIn, response: Response, db: AsyncSession = Depends
     username = normalize_username(payload.username)
     user = (await db.execute(select(User).where(User.username == username))).scalar_one_or_none()
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Invalid username or password")
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "账号或密码不正确")
     raw_token = new_token()
     db.add(AuthSession(user_id=user.id, token_hash=token_hash(raw_token), expires_at=session_expiry()))
     await db.commit()
@@ -1118,7 +1170,7 @@ async def register(payload: RegisterIn, db: AsyncSession = Depends(get_db)) -> U
     )
     invitation = (await db.execute(stmt)).scalar_one_or_none()
     if not invitation:
-        raise HTTPException(status.HTTP_400_BAD_REQUEST, "Invitation is invalid or expired")
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "邀请链接无效或已过期")
     username = normalize_username(payload.username)
     existing = (
         await db.execute(
@@ -1128,7 +1180,7 @@ async def register(payload: RegisterIn, db: AsyncSession = Depends(get_db)) -> U
         )
     ).scalar_one_or_none()
     if existing:
-        raise HTTPException(status.HTTP_409_CONFLICT, "The invitation or username is already in use")
+        raise HTTPException(status.HTTP_409_CONFLICT, "邀请已被使用或用户名已存在")
     user = User(
         username=username,
         email=invitation.email,
@@ -1306,7 +1358,7 @@ async def admin_test_existing_provider_model_connectivity(
     del admin
     provider = await db.get(Provider, provider_id)
     if not provider:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider 不存在")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     try:
         api_key = decrypt_api_key(provider.api_key_ciphertext)
         await asyncio.to_thread(_test_model_connectivity_sync, provider.base_url, api_key, payload.model_id)
@@ -1329,7 +1381,7 @@ async def admin_create_provider(payload: ProviderIn, admin: User = Depends(requi
         await db.commit()
     except Exception as exc:
         await db.rollback()
-        raise HTTPException(status.HTTP_409_CONFLICT, "Provider 标识已存在") from exc
+        raise HTTPException(status.HTTP_409_CONFLICT, "模型服务商标识已存在") from exc
     await db.refresh(provider)
     return _provider_out(provider, [])
 
@@ -1339,7 +1391,7 @@ async def admin_update_provider(provider_id: UUID, payload: ProviderUpdateIn, ad
     del admin
     provider = await db.get(Provider, provider_id)
     if not provider:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider 不存在")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     provider_models = (
         await db.execute(select(ProviderModel).where(ProviderModel.provider_id == provider.id))
     ).scalars().all()
@@ -1376,7 +1428,7 @@ async def admin_delete_provider(provider_id: UUID, admin: User = Depends(require
     del admin
     provider = await db.get(Provider, provider_id)
     if not provider:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider 不存在")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     provider_models = (
         await db.execute(select(ProviderModel).where(ProviderModel.provider_id == provider.id))
     ).scalars().all()
@@ -1399,7 +1451,7 @@ async def admin_create_model(provider_id: UUID, payload: ProviderModelIn, admin:
     del admin
     provider = await db.get(Provider, provider_id)
     if not provider:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider 不存在")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     if not provider.is_active:
         raise HTTPException(status.HTTP_409_CONFLICT, "请先启用供应商")
     try:
@@ -1429,7 +1481,7 @@ async def admin_update_model(model_id: UUID, payload: ProviderModelUpdateIn, adm
     if not model: raise HTTPException(status.HTTP_404_NOT_FOUND, "模型不存在")
     provider = await db.get(Provider, model.provider_id)
     if not provider:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider 不存在")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     catalog_id = f"{provider.slug}/{model.model_id}"
     if payload.is_active is False and model.is_active:
         await _ensure_models_are_idle(db, [catalog_id])
@@ -1456,7 +1508,7 @@ async def admin_verify_existing_model(model_id: UUID, admin: User = Depends(requ
         raise HTTPException(status.HTTP_404_NOT_FOUND, "模型不存在")
     provider = await db.get(Provider, model.provider_id)
     if not provider:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider 不存在")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     try:
         api_key = decrypt_api_key(provider.api_key_ciphertext)
         await asyncio.to_thread(_test_model_connectivity_sync, provider.base_url, api_key, model.model_id)
@@ -1485,7 +1537,7 @@ async def admin_delete_model(model_id: UUID, admin: User = Depends(require_super
         raise HTTPException(status.HTTP_404_NOT_FOUND, "模型不存在")
     provider = await db.get(Provider, model.provider_id)
     if not provider:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Provider 不存在")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     catalog_id = f"{provider.slug}/{model.model_id}"
     await _ensure_models_are_idle(db, [catalog_id])
     await _clear_default_if_selected(db, [catalog_id])
@@ -3017,11 +3069,11 @@ async def download_artifact(
         )
     ).scalar_one_or_none()
     if not artifact:
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Artifact not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "产物不存在")
     project_root = _workspace_path(project)
     artifact_path = (project_root / artifact.relative_path).resolve()
     if project_root not in artifact_path.parents or not artifact_path.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Artifact file not found")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "产物文件不存在或已被清理")
     return FileResponse(
         artifact_path,
         media_type=artifact.content_type,
@@ -3151,7 +3203,7 @@ async def frontend() -> FileResponse:
 
     index = FRONTEND_DIST / "index.html"
     if not index.is_file():
-        raise HTTPException(status.HTTP_404_NOT_FOUND, "Frontend build is not available")
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "前端构建产物不可用")
     return FileResponse(index)
 
 

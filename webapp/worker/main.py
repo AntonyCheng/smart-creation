@@ -45,15 +45,15 @@ def _load_skill() -> tuple[str, dict | None] | None:
         if skill_id == "ppt-master":
             # A runner predating the manifest contract keeps legacy behavior.
             return skill_id, None
-        emit("error", message=f"PPTMASTER_SKILL_MANIFEST_JSON is required for skill {skill_id!r}")
+        emit("error", message=f"运行器未提供技能清单（skill {skill_id!r}），请升级 runner 镜像后重试")
         return None
     try:
         manifest = json.loads(raw)
     except json.JSONDecodeError as exc:
-        emit("error", message=f"PPTMASTER_SKILL_MANIFEST_JSON is invalid: {exc}")
+        emit("error", message=f"技能清单内容无效：{exc}")
         return None
     if not isinstance(manifest, dict):
-        emit("error", message="PPTMASTER_SKILL_MANIFEST_JSON must be a JSON object")
+        emit("error", message="技能清单必须是 JSON 对象")
         return None
     return skill_id, manifest
 
@@ -77,7 +77,7 @@ def main() -> int:
     prompt = os.environ.get("PPTMASTER_JOB_PROMPT", "").strip()
     model = os.environ.get("PPTMASTER_JOB_MODEL", "").strip()
     if not job_id or not prompt:
-        emit("error", message="PPTMASTER_JOB_ID and PPTMASTER_JOB_PROMPT are required")
+        emit("error", message="任务环境变量缺失（JOB_ID / JOB_PROMPT）")
         return 2
     skill = _load_skill()
     if skill is None:
@@ -110,7 +110,7 @@ def main() -> int:
         return 1
     if continue_mode:
         if not project_workspace.is_dir() or not any(project_workspace.iterdir()):
-            emit("error", message="Base PPT Master workspace is missing or empty")
+            emit("error", message="基线工作区缺失或为空")
             return 1
         emit("status", status="continuing")
         baseline = adapter.baseline_snapshot(context)
@@ -121,7 +121,7 @@ def main() -> int:
     else:
         init_command = adapter.init_command(context)
         if init_command is not None and run_command(init_command) != 0:
-            emit("error", message="Project workspace initialization failed")
+            emit("error", message="项目工作区初始化失败")
             return 1
     try:
         template_instruction = adapter.prepare_template(context)
@@ -138,7 +138,7 @@ def main() -> int:
     if return_code:
         if return_code == OPENCODE_IDLE_TIMEOUT_EXIT_CODE:
             return return_code
-        emit("error", message=f"OpenCode exited with code {return_code}")
+        emit("error", message=f"生成引擎异常退出（退出码 {return_code}）")
         return return_code
     if not adapter.verify_project_workspace(context):
         return 1
@@ -160,5 +160,5 @@ if __name__ == "__main__":
     try:
         raise SystemExit(main())
     except Exception as exc:  # noqa: BLE001
-        emit("error", message=f"Worker setup failed: {exc}")
+        emit("error", message=f"任务启动失败：{exc}")
         raise SystemExit(1)

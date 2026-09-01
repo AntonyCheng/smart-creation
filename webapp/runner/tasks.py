@@ -13,7 +13,7 @@ import sys
 import threading
 import time
 from datetime import UTC, datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from celery.utils.log import get_task_logger
@@ -67,7 +67,7 @@ def _template_workspace_path(template: Template) -> Path:
     root = settings.workspace_root.resolve()
     path = (root / template.workspace_relpath).resolve()
     if root not in path.parents:
-        raise RuntimeError("Template workspace is outside WORKSPACE_ROOT")
+        raise RuntimeError("模板工作区越出数据根目录")
     return path
 
 
@@ -77,7 +77,7 @@ def _project_workspace_path(project: Project) -> Path:
     root = settings.workspace_root.resolve()
     path = (root / project.workspace_relpath).resolve()
     if root not in path.parents:
-        raise RuntimeError("Project workspace is outside WORKSPACE_ROOT")
+        raise RuntimeError("项目工作区越出数据根目录")
     return path
 
 
@@ -87,7 +87,7 @@ def _job_workspace_path(project: Project, job: Job) -> Path:
     project_root = _project_workspace_path(project)
     path = (project_root / "jobs" / str(job.id)).resolve()
     if project_root not in path.parents:
-        raise RuntimeError("Job workspace is outside the project workspace")
+        raise RuntimeError("任务工作区越出项目边界")
     return path
 
 
@@ -97,7 +97,7 @@ def _job_workspace_path_by_id(project: Project, job_id: UUID) -> Path:
     project_root = _project_workspace_path(project)
     path = (project_root / "jobs" / str(job_id)).resolve()
     if project_root not in path.parents:
-        raise RuntimeError("Base job workspace is outside the project workspace")
+        raise RuntimeError("基线任务工作区越出项目边界")
     return path
 
 
@@ -116,11 +116,11 @@ def _template_snapshot_source_path(job: Job) -> Path:
         or ".." in workspace_relative.parts
         or ".." in template_relative.parts
     ):
-        raise RuntimeError("Job template snapshot is invalid")
+        raise RuntimeError("任务的模板快照无效")
     workspace_root = settings.workspace_root.resolve()
     template_path = (workspace_root / workspace_relative / template_relative).resolve()
     if workspace_root not in template_path.parents:
-        raise RuntimeError("Job template snapshot is outside WORKSPACE_ROOT")
+        raise RuntimeError("模板快照越出数据根目录")
     return template_path
 
 
@@ -131,9 +131,9 @@ def _copy_template_snapshot(job: Job, destination: Path) -> Path | None:
         return None
     source = _template_snapshot_source_path(job)
     if not (source / "templates" / "design_spec.md").is_file():
-        raise RuntimeError("Selected template workspace is unavailable")
+        raise RuntimeError("所选模板工作区不可用")
     if any(item.is_symlink() for item in source.rglob("*")):
-        raise RuntimeError("Selected template contains unsupported symlinks")
+        raise RuntimeError("所选模板包含不受支持的符号链接")
     target = destination / "template"
     shutil.copytree(source, target)
     return target
@@ -162,7 +162,7 @@ def _prepare_job_workspace(project: Project, job: Job) -> Path:
     try:
         path.chmod(0o777)
     except OSError as exc:
-        raise RuntimeError(f"Job workspace is not writable: {path}") from exc
+        raise RuntimeError(f"任务工作区不可写：{path}") from exc
     return path
 
 
@@ -170,7 +170,7 @@ def _source_project_root(source_root: Path, skill_marker: str) -> Path:
     """Find the actual authoring root inside a historical job workspace."""
 
     if not skill_marker:
-        raise RuntimeError("Skill manifest does not declare an authoring-root marker")
+        raise RuntimeError("技能清单未声明作者根标记目录")
     if (source_root / skill_marker).is_dir():
         return source_root
     candidates = [
@@ -179,7 +179,7 @@ def _source_project_root(source_root: Path, skill_marker: str) -> Path:
         if item.is_dir() and (item / skill_marker).is_dir()
     ]
     if len(candidates) != 1:
-        raise RuntimeError("Base skill workspace has no unique authoring root")
+        raise RuntimeError("基线工作区中没有唯一的作者根目录")
     return candidates[0]
 
 
@@ -200,7 +200,7 @@ def _grant_worker_write_access(root: Path) -> None:
             else:
                 entry.chmod(entry.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
         except OSError as exc:
-            raise RuntimeError(f"Copied job workspace is not writable: {entry}") from exc
+            raise RuntimeError(f"复制后的任务工作区不可写：{entry}") from exc
 
 
 def _grant_editor_write_access(root: Path) -> None:
@@ -209,7 +209,7 @@ def _grant_editor_write_access(root: Path) -> None:
     try:
         web_uid = int(os.environ.get("PPTMASTER_WEB_UID", "10001"))
     except ValueError as exc:
-        raise RuntimeError("PPTMASTER_WEB_UID must be numeric") from exc
+        raise RuntimeError("PPTMASTER_WEB_UID 配置必须是数字") from exc
     entries = [root, *root.rglob("*")]
     try:
         for entry in entries:
@@ -224,7 +224,7 @@ def _grant_editor_write_access(root: Path) -> None:
             else:
                 entry.chmod(entry.stat().st_mode | stat.S_IWUSR | stat.S_IWGRP | stat.S_IWOTH)
         except OSError as exc:
-            raise RuntimeError(f"Completed job workspace is not editor-writable: {entry}") from exc
+            raise RuntimeError(f"完成任务的工作区不可供编辑器写入：{entry}") from exc
 
 
 def _seed_job_workspace(project: Project, job: Job, destination: Path) -> bool:
@@ -235,11 +235,11 @@ def _seed_job_workspace(project: Project, job: Job, destination: Path) -> bool:
     manifest = skill_manifest_for(job.skill_id)
     source_root = _job_workspace_path_by_id(project, job.base_job_id)
     if not source_root.is_dir() or not any(source_root.iterdir()):
-        raise RuntimeError(f"Base job workspace is empty: {job.base_job_id}")
+        raise RuntimeError(f"基线任务工作区为空：{job.base_job_id}")
     source_root = _source_project_root(source_root, marker_dir(manifest))
     # Never follow links from generated content during a cross-revision copy.
     if any(item.is_symlink() for item in source_root.rglob("*")):
-        raise RuntimeError(f"Base job workspace contains unsupported symlinks: {job.base_job_id}")
+        raise RuntimeError(f"基线任务工作区包含不受支持的符号链接：{job.base_job_id}")
     target_root = destination / continue_seed_dir(manifest)
     target_root.mkdir(parents=True, exist_ok=False)
     for source in source_root.iterdir():
@@ -260,7 +260,7 @@ def _copy_project_materials(project: Project, destination: Path) -> None:
         return
     target_root = (destination / "materials").resolve()
     if destination.resolve() not in target_root.parents:
-        raise RuntimeError("Material destination is outside the job workspace")
+        raise RuntimeError("材料复制目标越出任务工作区")
     target_root.mkdir(parents=True, exist_ok=True)
     for source in materials_root.iterdir():
         if source.is_symlink() or not source.is_file():
@@ -355,10 +355,10 @@ def _load_job(job_id: UUID) -> tuple[Job, Project]:
     with SessionLocal() as db:
         job = db.get(Job, job_id)
         if not job:
-            raise RuntimeError(f"Job {job_id} was not found")
+            raise RuntimeError(f"任务 {job_id} 不存在")
         project = db.get(Project, job.project_id)
         if not project:
-            raise RuntimeError(f"Project {job.project_id} was not found")
+            raise RuntimeError(f"项目 {job.project_id} 不存在")
         if job.cancellation_requested or job.status is JobStatus.CANCELLED:
             job.status = JobStatus.CANCELLED
             job.finished_at = datetime.now(UTC)
@@ -489,7 +489,7 @@ def _finalize_pending_user_deletion(user_id: UUID) -> None:
         user_root = (settings.workspace_root.resolve() / str(user.id)).resolve()
         root = settings.workspace_root.resolve()
         if root not in user_root.parents:
-            raise RuntimeError("User workspace is outside WORKSPACE_ROOT")
+            raise RuntimeError("用户工作区越出数据根目录")
         invitations = db.execute(
             select(Invitation).where(
                 (Invitation.created_by == user.id) | (Invitation.used_by == user.id)
@@ -571,7 +571,7 @@ def execute_job(self, job_id_text: str) -> None:
             except json.JSONDecodeError:
                 event = {"type": "log", "text": line[:1000]}
             if event.get("type") == "error":
-                worker_error = str(event.get("message") or "Worker execution failed")
+                worker_error = str(event.get("message") or "任务执行失败")
             _record_event(job.id, event)
 
         process = subprocess.Popen(

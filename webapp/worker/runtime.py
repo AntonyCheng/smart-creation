@@ -165,7 +165,7 @@ def install_opencode_config() -> bool:
             (OPENCODE_CONFIG_DESTINATION / "opencode.json").write_text(generated, encoding="utf-8")
             return True
         except (OSError, json.JSONDecodeError) as exc:
-            emit("error", message=f"OpenCode configuration setup failed: {exc}")
+            emit("error", message=f"生成引擎配置装配失败：{exc}")
             return False
     if not OPENCODE_CONFIG_SOURCE.exists():
         return True
@@ -183,14 +183,14 @@ def install_opencode_config() -> bool:
     if source is None:
         emit(
             "error",
-            message="OpenCode configuration source does not contain opencode.jsonc or opencode.json",
+            message="OpenCode 配置源中缺少 opencode.jsonc 或 opencode.json",
         )
         return False
     try:
         OPENCODE_CONFIG_DESTINATION.mkdir(parents=True, exist_ok=True)
         shutil.copy2(source, OPENCODE_CONFIG_DESTINATION / source.name)
     except OSError as exc:
-        emit("error", message=f"OpenCode configuration setup failed: {exc}")
+        emit("error", message=f"生成引擎配置装配失败：{exc}")
         return False
     return True
 

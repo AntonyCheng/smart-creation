@@ -330,7 +330,7 @@ def _run_http() -> None:
     async def download(request: Request):
         artifact = artifacts.get(request.path_params["token"])
         if not artifact:
-            return JSONResponse({"error": "download link is invalid or expired"}, status_code=404)
+            return JSONResponse({"error": "下载链接无效或已过期"}, status_code=404)
         return FileResponse(artifact.file_path, media_type=artifact.media_type, filename=artifact.filename)
 
     app.add_route("/downloads/{token}", download, methods=["GET"])
