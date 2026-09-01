@@ -15,7 +15,7 @@ Bloomberg / Economist news-infographic — publication-grade information density
 
 - Serif headline / hero-number for authority × a clean sans or monospace for numeric precision in tables and chart labels. Small captions and source lines; tight, deliberate hierarchy.
 
-> Families are chosen at confirmation `g`; this style asks for a serif-headline × precise-sans/mono-data *character*.
+> Families are chosen at confirmation `g`; this style asks for a serif-headline × precise-sans/mono-data *character*. This governs editable native text; decorative-lettering eligibility remains a separate carrier decision.
 
 ## 3. Using the deck's colors
 
@@ -26,7 +26,7 @@ Bloomberg / Economist news-infographic — publication-grade information density
 
 ## 4. Texture / elevation
 
-- Flat, publication-grade — hairline rules over heavy cards; optional scrim on any image; no glow, no decorative shadow.
+- Flat, publication-grade — when either carries the relationship, favor hairline rules over heavy cards. Flatness governs visual weight, not contour vocabulary; outlined or compound page fields remain compatible. Optional scrim on any image; no glow, no decorative shadow.
 
 ## 5. Paired image-rendering
 

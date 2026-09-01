@@ -12,8 +12,7 @@ Maintainer-only inventory for adding, moving, or removing workflow documents. Ru
 |---|---|---|
 | `generate-pptx` | Top-level route | [`generate-pptx.md`](./generate-pptx.md) |
 | `create-template` | Top-level route | [`create-template.md`](./create-template.md) |
-| `template-fill-pptx` | Top-level route | [`template-fill-pptx.md`](./template-fill-pptx.md) |
-| `native-enhance-pptx` | Top-level route | [`native-enhance-pptx.md`](./native-enhance-pptx.md) |
+| `edit-native-pptx` | Top-level route | [`edit-native-pptx.md`](./edit-native-pptx.md) |
 
 ## 2. Supporting Documents
 
@@ -28,13 +27,14 @@ Maintainer-only inventory for adding, moving, or removing workflow documents. Ru
 | `create-layout` | Template child workflow | [`create-template/create-layout.md`](./create-template/create-layout.md) | Create Template |
 | `create-deck` | Template child workflow | [`create-template/create-deck.md`](./create-template/create-deck.md) | Create Template |
 | `topic-research` | Research/source-preparation stage | [`stages/topic-research.md`](./stages/topic-research.md) | Inside Generate Step 1 |
+| `web-image-review` | Image-review stage | [`stages/web-image-review.md`](./stages/web-image-review.md) | Generate Step 5 bounded multimodal review between web candidate-page save and promotion |
 | `resume-execute` | Control stage | [`stages/resume-execute.md`](./stages/resume-execute.md) | Generate Step 6 resume |
 | `refine-spec` | Planning stage | [`stages/refine-spec.md`](./stages/refine-spec.md) | After Design Spec Gate 1, before lock Gate 2 |
 | `verify-charts` | Quality gate | [`stages/verify-charts.md`](./stages/verify-charts.md) | Before Generate Step 7 |
 | `visual-review` | Quality gate | [`stages/visual-review.md`](./stages/visual-review.md) | Before Generate Step 7 |
 | `live-preview` | Editor stage | [`stages/live-preview.md`](./stages/live-preview.md) | Generate preview / post-export |
 | `customize-animations` | Post-processing stage | [`stages/customize-animations.md`](./stages/customize-animations.md) | Generate conditional export |
-| `generate-audio` | Shared audio stage | [`stages/generate-audio.md`](./stages/generate-audio.md) | Generate / Enhance Native |
+| `generate-audio` | Shared audio stage | [`stages/generate-audio.md`](./stages/generate-audio.md) | Generate / Edit Native |
 | `failure-recovery` | Governance | [`governance/failure-recovery.md`](./governance/failure-recovery.md) | All routes |
 
 ## 3. Maintenance Rules

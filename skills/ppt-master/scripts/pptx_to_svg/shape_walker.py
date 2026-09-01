@@ -164,10 +164,30 @@ def _adjust_for_group(child_xfrm: Xfrm, group_xfrm: Xfrm) -> Xfrm:
     ch_x = group_xfrm.ch_x or 0.0
     ch_y = group_xfrm.ch_y or 0.0
 
-    new_x = group_xfrm.x + (child_xfrm.x - ch_x) * sx
-    new_y = group_xfrm.y + (child_xfrm.y - ch_y) * sy
-    new_w = child_xfrm.w * sx
-    new_h = child_xfrm.h * sy
+    center_x = group_xfrm.x + (
+        child_xfrm.x + child_xfrm.w / 2.0 - ch_x
+    ) * sx
+    center_y = group_xfrm.y + (
+        child_xfrm.y + child_xfrm.h / 2.0 - ch_y
+    ) * sy
+
+    # A parent group's child-frame scaling is applied after the child's own
+    # rotation.  For a quarter-turn, the child's local x axis therefore lands
+    # on the parent's y axis (and vice versa).  Scaling the unrotated frame by
+    # ``sx``/``sy`` before retaining the rotation reverses that order and can
+    # visibly stretch nested 90-degree groups under a non-uniform parent.
+    quarter_turn = round(child_xfrm.rot / 90.0) % 2 == 1
+    exact_quarter_turn = abs(
+        child_xfrm.rot - round(child_xfrm.rot / 90.0) * 90.0
+    ) < 1e-7
+    if quarter_turn and exact_quarter_turn:
+        new_w = child_xfrm.w * sy
+        new_h = child_xfrm.h * sx
+    else:
+        new_w = child_xfrm.w * sx
+        new_h = child_xfrm.h * sy
+    new_x = center_x - new_w / 2.0
+    new_y = center_y - new_h / 2.0
 
     return Xfrm(
         x=new_x, y=new_y, w=new_w, h=new_h,
@@ -231,6 +251,7 @@ def _walk_container(
     container: ET.Element,
     parent_group_xfrm: Xfrm | None,
     ancestor_rotation: float = 0.0,
+    source_order_path: tuple[int, ...] = (),
     placeholder_xfrms: dict[tuple[str | None, str | None], Xfrm] | None = None,
     placeholder_lst_styles: dict[
         tuple[str | None, str | None],
@@ -244,6 +265,7 @@ def _walk_container(
     """Walk a p:spTree or p:grpSp subtree. Children kept in document (z) order.
     """
     nodes: list[ShapeNode] = []
+    source_order = 0
     for child in list(container):
         if not isinstance(child.tag, str):
             continue
@@ -257,6 +279,8 @@ def _walk_container(
         kind_info = _KIND_MAP.get(local)
         if kind_info is None:
             continue
+        source_order += 1
+        child_order_path = (*source_order_path, source_order)
         kind, nv_tag = kind_info
 
         (
@@ -267,6 +291,10 @@ def _walk_container(
             hyperlink_rid,
             hyperlink_action,
         ) = _read_nv_sp_pr(child, nv_tag)
+        if not spid:
+            spid = "missing-" + "-".join(
+                str(value) for value in child_order_path
+            )
         xfrm = parse_xfrm(_resolve_xfrm(child, kind))
         effective_rotation = (ancestor_rotation + xfrm.rot) % 360.0
 
@@ -316,6 +344,7 @@ def _walk_container(
         if kind == GROUP:
             node.children = _walk_container(
                 child, xfrm, effective_rotation,
+                source_order_path=child_order_path,
                 placeholder_xfrms=placeholder_xfrms,
                 placeholder_lst_styles=placeholder_lst_styles,
                 placeholder_body_properties=placeholder_body_properties,

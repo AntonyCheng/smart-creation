@@ -12,20 +12,22 @@ diagnostic or forced route is needed.
 
 ## Shared Output Contract
 
-All `source_to_md` converters keep their existing Markdown output behavior and
-now also write a lightweight sidecar profile when conversion succeeds:
+All `source_to_md` backends preserve their Markdown output and attempt a
+sidecar profile after conversion. Direct calls treat the sidecar as
+best-effort: an I/O failure warns without changing the Markdown result. The
+unified `source_to_md.py` dispatcher writes a missing profile before success.
 
 | Output | Convention |
 |---|---|
 | Markdown | `<stem>.md` beside the local source unless `-o` selects another path |
 | Asset directory | `<stem>_files/` when the backend extracts images or media |
 | Image manifest | `<stem>_files/image_manifest.json` when image metadata is available |
-| Conversion profile | `<stem>.conversion_profile.json` beside the Markdown output |
+| Conversion profile | `<stem>.conversion_profile.json` beside the Markdown output when written |
 
-The conversion profile is metadata only. It records the converter, source path,
+When present, the conversion profile is metadata only: converter, source path,
 Markdown structure counts, asset directory, image manifest path, and image
-count. Downstream PPT workflows still use the Markdown and image manifest as the
-content/asset contract; the profile is for inspection and debugging.
+count. Downstream PPT workflows still use Markdown and the image manifest as
+the content/asset contract; the profile is for inspection and debugging.
 
 ## `source_to_md.py`
 
@@ -64,9 +66,9 @@ Useful options:
 
 For multi-source project intake, use `project_manager.py import-sources` with
 all source paths / URLs. For local files, the default is to keep generated
-Markdown/profile outputs beside the original source. `source_to_md.py` and the
-backend converters support single files, explicit multi-file inputs, and
-non-recursive directory inputs.
+Markdown and profile outputs beside the original source.
+`source_to_md.py` and the backend converters support single files, explicit
+multi-file inputs, and non-recursive directory inputs.
 
 ## `source_to_md/pdf_to_md.py`
 
@@ -136,8 +138,10 @@ pip install mammoth markdownify ebooklib nbconvert beautifulsoup4
 # Windows: https://pandoc.org/installing.html
 ```
 
-All paths produce the same output convention: `<input>.md` plus a sibling `<input>_files/` directory containing extracted images with relative references.
-On success, a sibling `<input>.conversion_profile.json` is also written.
+All paths produce `<input>.md`. Extracted assets use a sibling `<input>_files/`
+directory with relative references. Without assets, that directory need not remain.
+The direct backend then attempts `<input>.conversion_profile.json` under the
+shared best-effort sidecar contract.
 
 ## `source_to_md/excel_to_md.py`
 
@@ -165,7 +169,7 @@ Behavior:
 - trims empty outer rows and columns
 - propagates merged-cell labels for readable Markdown tables
 - exports formula cells as cached values; it does not recalculate formulas
-- writes `<input>.conversion_profile.json` after successful conversion
+- uses the shared best-effort conversion-profile contract after success
 
 Dependency:
 
@@ -202,7 +206,7 @@ Behavior:
 - exports embedded pictures to a sibling `_files/` directory
 - preserves supported run, table-cell, picture, and text-shape links as Markdown links, including `#slide-N` jumps
 - appends speaker notes when present
-- writes `<input>.conversion_profile.json` after successful conversion
+- uses the shared best-effort conversion-profile contract after success
 
 Dependency:
 
@@ -227,12 +231,11 @@ Outputs (per source deck, prefixed by file stem):
 - `<stem>.slide_library.json` — text slots, geometry, native tables, native chart display caches, and SmartArt nodes/connections
 - `source_profile.json` — the single multi-deck index: a compact Strategist-facing digest per deck (over identity, tables, charts, SmartArt, and page types) under `decks[]`, with prefixed artifact pointers
 
-`project_manager.py import-sources` runs this automatically for PPTX/PPTM/PPSX/PPSM/POTX/POTM inputs and stores the bundle directly under `analysis/`. Multi-deck per project: importing several PPTX files gives each its own `<stem>.*` artifacts and a `decks[]` entry in the shared `source_profile.json` index (re-importing the same stem replaces its entry). The beautify profile and Fill Native PPTX route stay single-deck and read one chosen deck's `<stem>.*` artifacts.
+`project_manager.py import-sources` runs this automatically for PPTX/PPTM/PPSX/PPSM/POTX/POTM inputs and stores the bundle directly under `analysis/`. Multi-deck per project: importing several PPTX files gives each its own `<stem>.*` artifacts and a `decks[]` entry in the shared `source_profile.json` index (re-importing the same stem replaces its entry). The beautify profile stays single-deck and reads one chosen deck's `<stem>.*` artifacts.
 
 Usage boundary:
 - Standard generation uses these fields as facts and recommendation candidates; it does not inherit source slide coordinates or page order by default.
 - Beautify promotes selected identity/content fields into locked constraints after confirmation and redraws SmartArt meaning with ordinary editable shapes.
-- Template-fill uses the slide library as the native PPTX fill contract; SmartArt is inventory-only and remains unchanged.
 
 ## `pptx_to_svg.py`
 
@@ -364,8 +367,10 @@ claiming native reconstruction. It records `formula-not-reconstructed`;
 ### Native table and chart import claims
 
 Supported text-grid tables and conservative classic-chart caches carry a
-`data-pptx-replace-with` claim beside their SVG fallback, with the replacement
-payload in a child `<metadata type="application/json">`. The parent claim
+`data-pptx-replace-with` claim plus
+`data-pptx-native-authority="json"` beside their SVG preview, with the
+authoritative replacement payload in a child
+`<metadata type="application/json">`. The parent claim
 selects the table or chart schema. Table import requires
 exact physical row/grid topology and accepts canonical rectangular merges,
 safe solid/no-fill per-side borders, plain multi-paragraph cells, and a closed
@@ -409,21 +414,16 @@ warning when the SVG fallback itself is complete. Imported table/chart groups
 under this contract carry `data-pptx-import-source="pptx"`, whether active or
 fallback-only; generated authoring omits this provenance attribute.
 
-Active imported markers also carry `data-pptx-fallback-sha256`, computed over
-their canonical fallback plus reachable document-level SVG fragment definitions.
-A later visible edit, reachable definition change, local reference-target
-change, or marker transform makes the replacement metadata stale. The mandatory
-quality checker reports the mismatch; default export keeps the edited fallback,
-while `--native-charts-and-tables` fails before replacement so it cannot discard that edit.
-`visibility:hidden` content, marker-local unused definitions, and explicitly
-referenced document-level target roots (even when hidden) are included
-conservatively; marker-local `display:none` subtrees are excluded, and external
-file bytes are not read.
-Generated authoring and reusable templates omit import provenance and do not
-preseed a static fallback hash; that state is normal and does not warn. A legacy
-imported marker that still carries PPTX import provenance but lacks the hash
-remains native-compatible and warns in the checker/native route that stale
-detection is unavailable.
+JSON-first imported markers do not use preview freshness to veto native export;
+their preview may be normalized or approximate. Free-designed Chart/Table
+markers omit the authority attribute and are SVG-first. After their visible
+fallback and JSON are synchronized, `stamp_native_fallbacks.py --write` records
+`data-pptx-fallback-sha256` over the canonical fallback plus reachable
+document-level SVG definitions. A later visible/reference/transform edit makes
+that baseline stale. Default export keeps the edited fallback; canonical check
+and `--native-charts-and-tables` fail before replacement. A missing/invalid
+SVG-first baseline also fails native replacement. The hash detects later edits;
+it does not prove that independently authored JSON matches the SVG.
 
 Legacy `data-pptx-native*`, `data-pptx-visual-status`, and
 `data-pptx-route-status` spellings remain read-compatible. New importer output
@@ -626,8 +626,8 @@ fetch WeChat Official Accounts (`mp.weixin.qq.com`) and other sites that
 block Python's default TLS fingerprint. No extra flags needed. If
 `curl_cffi` is not available, it falls back to plain `requests`.
 
-On success, the converter writes `<output>.conversion_profile.json` beside the
-Markdown output.
+On success, the converter uses the shared best-effort sidecar contract for
+`<output>.conversion_profile.json` beside the Markdown output.
 `--emit-result` is for wrapper scripts that need the actual saved Markdown path
 when the converter derives a title-based filename.
 
