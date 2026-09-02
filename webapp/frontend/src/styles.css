@@ -1533,6 +1533,14 @@ html[data-theme="dark"] .kppt-template-fidelity-note { color: var(--zc-muted) !i
 .kppt-template-grid .zc-template-card footer button:nth-child(2) { color: var(--zc-brand); }
 .kppt-upload-template { min-height: 254px; border: 1px dashed #d5d8de; border-radius: 13px; background: #fffafa; }
 .kppt-upload-template:hover { border-color: #efb1b7; background: #fff; }
+/* antd Upload's inner .ant-upload-select is inline-block and shrink-wraps, so the
+   upload card collapsed instead of filling its grid cell like template cards.
+   Grid each wrapper level so the card stretches to the row like its siblings. */
+.kppt-template-grid .ant-upload-wrapper,
+.kppt-template-grid .ant-upload-wrapper .ant-upload-select,
+.kppt-template-grid .ant-upload-wrapper .rc-upload { display: grid; }
+.kppt-template-grid .ant-upload-wrapper .ant-upload-select,
+.kppt-template-grid .ant-upload-wrapper .rc-upload { width: 100%; height: 100%; }
 .kppt-prompt-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; margin-top: 0; }
 .kppt-prompt-grid .zc-prompt-card { min-height: 232px; border-color: #e4e6ea; border-radius: 13px; box-shadow: 0 2px 5px rgb(26 29 34 / 2%); transition: .16s ease; }
 .kppt-prompt-grid .zc-prompt-card:hover { border-color: #d5d8de; box-shadow: 0 16px 42px rgb(26 29 34 / 7%); transform: translateY(-2px); }
