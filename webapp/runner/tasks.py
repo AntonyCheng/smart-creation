@@ -728,6 +728,7 @@ def import_template(template_id_text: str) -> None:
         review_config = _template_review_opencode_config()
         if review_config:
             import_env["PPTMASTER_OPENCODE_CONFIG_JSON"] = review_config
+            import_env["PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS"] = str(settings.opencode_idle_timeout_seconds)
         code, _ = _run_worker_module(
             "worker.template_import",
             import_env,

@@ -282,18 +282,10 @@ After writing the file, stop; do not run export or validation commands.
 """
     if not install_opencode_config():
         return False
-    previous_timeout = os.environ.get("PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS")
-    os.environ["PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS"] = "180"
-    try:
-        return_code = run_command(
-            ["opencode", "run", "--format", "json", prompt],
-            idle_timeout_seconds=opencode_idle_timeout_seconds(),
-        )
-    finally:
-        if previous_timeout is None:
-            os.environ.pop("PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS", None)
-        else:
-            os.environ["PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS"] = previous_timeout
+    return_code = run_command(
+        ["opencode", "run", "--format", "json", prompt],
+        idle_timeout_seconds=opencode_idle_timeout_seconds(),
+    )
     return return_code == 0 and spec_path.is_file() and spec_path.stat().st_size > 200
 
 
