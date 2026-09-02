@@ -3771,7 +3771,7 @@ def _sync_gongwen_input_json(docx_path: Path) -> None:
 async def editor_callback(token: str, request: Request) -> dict:
     """Receive OnlyOffice save callbacks (status 2/6 carry the saved file)."""
 
-    _project, job, artifact_path, kind = await _editor_resolve_target(token)
+    project, job, artifact_path, kind = await _editor_resolve_target(token)
     body = await request.json()
     save_status = int(body.get("status") or 0)
     if save_status not in (2, 6):
