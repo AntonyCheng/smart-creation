@@ -1,0 +1,22 @@
+# Force LF for anything that runs as a Linux shell script or gets baked
+# into a container build, regardless of a contributor's local git config.
+# The repo is developed cross-platform but always deployed to Linux via
+# Docker; a CRLF shebang line silently breaks `#!/bin/sh` at container
+# startup.
+* text=auto eol=lf
+
+*.sh text eol=lf
+Dockerfile* text eol=lf
+Caddyfile text eol=lf
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.pptx binary
+*.docx binary
+*.pdf binary
+*.ttf binary
+*.otf binary
+*.woff binary
+*.woff2 binary
