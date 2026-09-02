@@ -382,32 +382,56 @@ def _record_event(job_id: UUID, event: dict) -> None:
         db.commit()
 
 
-def _record_refinement_result(db, job: Job) -> None:
-    """Append one terminal assistant message for a page refinement job."""
+def _record_refinement_result(db, job: Job, reply: str = "") -> None:
+    """Append one terminal assistant message for a refinement job.
 
-    if job.target_slide_number is None:
-        return
+    Page refinement targets one slide (target_slide_number 1..999); document
+    refinement (公文) targets the whole document and stores its request under
+    slide 0, so both scopes must receive a terminal assistant message.
+    """
+
+    slide_number = job.target_slide_number
+    if slide_number is None:
+        document_scope = (
+            db.execute(
+                select(PageRefinementMessage.id).where(
+                    PageRefinementMessage.job_id == job.id,
+                    PageRefinementMessage.slide_number == 0,
+                    PageRefinementMessage.role == "user",
+                )
+            ).first()
+            is not None
+        )
+        if not document_scope:
+            return
+        slide_number = 0
     if job.status is JobStatus.SUCCEEDED:
-        content = "当前页面已修改完成，结果已应用到当前 PPT。你还可以继续告诉我需要调整的地方。"
+        agent_reply = (reply or "").strip()
+        if agent_reply:
+            content = agent_reply
+        elif slide_number == 0:
+            content = "这份公文已按你的要求更新完成，预览与导出已同步。如需继续调整，请直接告诉我。"
+        else:
+            content = "当前页面已修改完成，结果已应用到当前 PPT。你还可以继续告诉我需要调整的地方。"
     elif job.status is JobStatus.CANCELLED:
-        content = "这次修改已中止，当前 PPT 没有变化。你可以继续发送新的修改要求。"
+        content = "这次修改已中止，当前文档没有变化。你可以继续发送新的修改要求。"
     else:
         detail = (job.error or "").strip()
-        content = "这次修改没有完成，当前 PPT 没有变化。你可以直接重试，或换一种方式描述修改要求。"
+        content = "这次修改没有完成，当前文档没有变化。你可以直接重试，或换一种方式描述修改要求。"
         if detail:
             content += f"失败原因：{detail[:800]}"
     db.add(
         PageRefinementMessage(
             project_id=job.project_id,
             job_id=job.id,
-            slide_number=job.target_slide_number,
+            slide_number=slide_number,
             role="assistant",
             content=content,
         )
     )
 
 
-def _finish_job(job_id: UUID, succeeded: bool, error: str | None = None) -> None:
+def _finish_job(job_id: UUID, succeeded: bool, error: str | None = None, reply: str = "") -> None:
     """Persist terminal state and discover the job's exported artifacts."""
 
     with SessionLocal() as db:
@@ -421,7 +445,7 @@ def _finish_job(job_id: UUID, succeeded: bool, error: str | None = None) -> None
         job.error = error
         job.finished_at = datetime.now(UTC)
         db.add(JobEvent(job_id=job.id, event_type="status", payload={"status": job.status.value}))
-        _record_refinement_result(db, job)
+        _record_refinement_result(db, job, reply=reply)
         project_workspace = _project_workspace_path(project)
         job_workspace = _job_workspace_path(project, job)
         _discover_job_artifacts(db, job, project, project_workspace, job_workspace)
@@ -554,6 +578,7 @@ def execute_job(self, job_id_text: str) -> None:
             logger.exception("Cancelled-job user cleanup failed for owner %s", project.owner_id)
         return
     worker_error: str | None = None
+    reply_text = ""
     process: subprocess.Popen | None = None
     stopped, cancelled = threading.Event(), threading.Event()
     try:
@@ -587,13 +612,16 @@ def execute_job(self, job_id_text: str) -> None:
             environment["PPTMASTER_OPENCODE_CONFIG_JSON"] = generated_config
 
         def record_line(line: str) -> None:
-            nonlocal worker_error
+            nonlocal worker_error, reply_text
             try:
                 event = json.loads(line)
             except json.JSONDecodeError:
                 event = {"type": "log", "text": line[:1000]}
             if event.get("type") == "error":
                 worker_error = str(event.get("message") or "任务执行失败")
+            elif event.get("type") == "agent":
+                # The agent's final text is the user-facing reply for refinements.
+                reply_text = str(event.get("text") or "").strip()[:1000]
             _record_event(job.id, event)
 
         process = subprocess.Popen(
@@ -625,7 +653,7 @@ def execute_job(self, job_id_text: str) -> None:
             return
         if return_code != 0:
             raise RuntimeError(worker_error or f"Worker exited with code {return_code}")
-        _finish_job(job.id, succeeded=True)
+        _finish_job(job.id, succeeded=True, reply=reply_text)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Job %s failed", job.id)
         if process is not None and process.poll() is None:

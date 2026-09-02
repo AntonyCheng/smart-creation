@@ -302,7 +302,15 @@ project directory. Draft the document by following the Skill workflow and export
 .docx through the Skill's prepare_draft step into {workspace}/exports.
 This platform collects finished files automatically: do not call send_channel_file, do not
 invent download links, and do not attempt any file delivery. Your final text (the review
-sheet) is delivered to the user as-is.
+sheet) is delivered to the user as-is, so write that final text in Chinese and summarize
+concretely what changed, or explain plainly why nothing needed to change.
+When revising an existing document, map the requester's wording onto the document regions
+precisely: the red masthead (发文机关标志/红头, the large red line at the very top), the
+document number (发文字号 below the masthead), the title (标题 below the masthead rule), the
+recipients (主送机关), the body (正文), and the colophon (版记). Casual phrases such as
+"红头标题" or "红头上的字" refer to the red masthead text, not the title below the rule; when
+a request is ambiguous, prefer the visually named region and state your interpretation in
+the review sheet before applying it.
 Do not access files outside {WORKSPACE} except the installed Skill and its declared tools.
 
 User request:
