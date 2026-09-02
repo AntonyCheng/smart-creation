@@ -93,16 +93,17 @@ export function DocEditorPage({ projectId, docKind }: { projectId: string; docKi
     };
   }, [docKind, projectId]);
 
-  return <main className="zc-auth" style={{ display: "block", padding: "18px 22px", height: "100dvh", boxSizing: "border-box" }}>
-    <header className="zc-workbench-head" style={{ marginBottom: 12 }}>
+  return <main style={{ height: "100dvh", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 12, padding: "14px 18px", background: "#f7f7f8" }}>
+    <header className="zc-workbench-head" style={{ margin: 0 }}>
       <button className="zc-icon" type="button" aria-label="返回项目" onClick={() => navigate(`/workspace/${projectId}`)}><ArrowLeft size={19} /></button>
       <div><strong>手动编辑</strong><span>{docKind === "docx" ? "公文 WYSIWYG 编辑，保存后自动同步回创作源" : "PPTX 定稿编辑，保存后更新可下载文稿"}</span></div>
     </header>
     {message
-      ? <div className="zc-panel"><p>{message}</p><button className="zc-secondary" type="button" onClick={() => navigate(`/workspace/${projectId}`)}>返回项目</button></div>
-      : <div style={{ height: "calc(100dvh - 84px)", position: "relative" }}>
-        {!ready && <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center" }}><LoaderCircle className="zc-spin" size={26} /></div>}
-        <div ref={placeholderRef} id="onlyoffice-placeholder" />
+      ? <div className="zc-panel" style={{ maxWidth: 520 }}><p>{message}</p><button className="zc-secondary" type="button" onClick={() => navigate(`/workspace/${projectId}`)}>返回项目</button></div>
+      : <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
+        {!ready && <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "#f7f7f8", zIndex: 2 }}><LoaderCircle className="zc-spin" size={26} /></div>}
+        {/* DocsAPI 会在占位元素内部插入 100% 高度的 iframe，占位元素必须有真实尺寸 */}
+        <div ref={placeholderRef} id="onlyoffice-placeholder" style={{ position: "absolute", inset: 0 }} />
       </div>}
   </main>;
 }
