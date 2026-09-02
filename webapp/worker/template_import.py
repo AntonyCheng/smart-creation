@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import os
 import re
@@ -11,6 +12,7 @@ import sys
 import tempfile
 from typing import Any
 from pathlib import Path
+from urllib.parse import urlparse
 
 from worker.runtime import install_opencode_config, opencode_idle_timeout_seconds, run_command
 
@@ -154,10 +156,50 @@ def _run_render(command: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(command, cwd=SKILL_ROOT, capture_output=True, text=True)
 
 
+_HREF_RE = re.compile(r"""((?:xlink:)?href=")([^"]+)(")""")
+_IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+}
+
+
+def _inline_svg_images(svg_path: Path, destination: Path) -> None:
+    """Copy one SVG with every relative image reference inlined as a data URI.
+
+    LibreOffice's SVG import does not resolve relative image paths (they vanish
+    from the rendered PDF), so preview rendering needs self-contained copies.
+    The workspace originals keep their portable relative references.
+    """
+
+    text = svg_path.read_text(encoding="utf-8")
+
+    def replace(match: re.Match[str]) -> str:
+        reference = match.group(2)
+        if reference.startswith(("data:", "#", "http://", "https://", "file:")):
+            return match.group(0)
+        resolved = urlparse(unquote(reference))
+        if resolved.scheme or resolved.path.startswith("/"):
+            return match.group(0)
+        target = (svg_path.parent / resolved.path).resolve()
+        if not target.is_file():
+            return match.group(0)
+        mime = _IMAGE_MIME_TYPES.get(target.suffix.lower(), "application/octet-stream")
+        payload = base64.b64encode(target.read_bytes()).decode("ascii")
+        return f"{match.group(1)}data:{mime};base64,{payload}{match.group(3)}"
+
+    (destination).write_text(_HREF_RE.sub(replace, text), encoding="utf-8")
+
+
 def _render_preview_pngs(template_root: Path) -> list[str]:
     """Render each materialized template SVG to PNG so browser previews are
-    pixel-faithful (SVG references like ../images are not resolvable inside a
-    browser <img> tag, but LibreOffice renders them from disk)."""
+    pixel-faithful: neither a browser <img> tag nor LibreOffice resolves the
+    SVGs' relative ../images references, so rendering works on temp copies
+    with every image inlined as a base64 data URI."""
 
     svg_dir = template_root / "templates"
     preview_dir = template_root / "preview"
@@ -169,9 +211,14 @@ def _render_preview_pngs(template_root: Path) -> list[str]:
     preview_dir.mkdir(parents=True, exist_ok=True)
     pdf_dir = Path(tempfile.mkdtemp(prefix="pptmaster-preview-"))
     try:
+        render_paths: list[str] = []
+        for svg_path in svg_paths:
+            inlined = pdf_dir / svg_path.name
+            _inline_svg_images(svg_path, inlined)
+            render_paths.append(str(inlined))
         result = _run_render(
             ["soffice", "--headless", "--convert-to", "pdf", "--outdir", str(pdf_dir)]
-            + [str(path) for path in svg_paths]
+            + render_paths
         )
         if result.returncode != 0:
             detail = result.stderr[-1000:] or result.stdout[-1000:]
@@ -289,6 +336,52 @@ After writing the file, stop; do not run export or validation commands.
     return return_code == 0 and spec_path.is_file() and spec_path.stat().st_size > 200
 
 
+_FRAME_RE = re.compile(r'(data-pptx-frame=")([-0-9.eE ]+)(")')
+
+
+def _format_coordinate(value: float) -> str:
+    """Mirror the skill's two-decimal page-coordinate formatting."""
+
+    compact = f"{value:.2f}".rstrip("0").rstrip(".")
+    return "0" if compact in {"", "-0"} else compact
+
+
+def _normalize_zero_extent_frames(import_root: Path) -> int:
+    """Bump zero-width/height frames to 0.01pt so materialization accepts them.
+
+    Straight connectors legitimately carry a zero extent on one axis, but the
+    skill's mirror materializer fails closed on any non-positive frame. The
+    0.01pt bump changes no visible geometry while keeping the import alive.
+    Only the authoring bundle the materializer consumes is touched.
+    """
+
+    adjusted = 0
+    authoring_dir = import_root / "authoring-svg"
+    for svg_path in sorted(authoring_dir.glob("*.svg")):
+        text = svg_path.read_text(encoding="utf-8")
+
+        def replace(match: re.Match[str]) -> str:
+            nonlocal adjusted
+            values = match.group(2).split()
+            if len(values) != 4:
+                return match.group(0)
+            try:
+                x, y, width, height = (float(item) for item in values)
+            except ValueError:
+                return match.group(0)
+            if width > 0 and height > 0:
+                return match.group(0)
+            adjusted += 1
+            return (
+                f'{match.group(1)}{_format_coordinate(x)} {_format_coordinate(y)} '
+                f'{_format_coordinate(max(width, 0.01))} '
+                f'{_format_coordinate(max(height, 0.01))}{match.group(3)}'
+            )
+
+        svg_path.write_text(_FRAME_RE.sub(replace, text), encoding="utf-8")
+    return adjusted
+
+
 def main() -> int:
     source = WORKSPACE / "source.pptx"
     import_root = WORKSPACE / "import"
@@ -312,6 +405,9 @@ def main() -> int:
     # pptx_template_import --inheritance-mode both already publishes the layered
     # authoring-svg/ bundle (plus its summary) that mirror_template_materialize
     # consumes, so no separate authoring-view projection runs here.
+    adjusted_frames = _normalize_zero_extent_frames(import_root)
+    if adjusted_frames:
+        _emit_progress("extracting", f"已修正 {adjusted_frames} 处零尺寸图形框，避免物化失败")
     # Materialization touches each imported SVG and native payload repeatedly.
     # Work on the container-local tmpfs to avoid Windows bind-mount metadata latency.
     with tempfile.TemporaryDirectory(prefix="pptmaster-template-") as temporary:
