@@ -12,7 +12,7 @@ import sys
 import tempfile
 from typing import Any
 from pathlib import Path
-from urllib.parse import urlparse
+from urllib.parse import unquote, urlparse
 
 from worker.runtime import install_opencode_config, opencode_idle_timeout_seconds, run_command
 
