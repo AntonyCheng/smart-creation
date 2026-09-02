@@ -177,6 +177,17 @@ def _template_out(template: Template) -> TemplateOut:
     )
 
 
+def _validate_preset_skill_id(value: str | None) -> str | None:
+    """Normalize a preset skill scope; empty means every skill."""
+
+    normalized = (value or "").strip()
+    if not normalized:
+        return None
+    if get_skill_manifest(normalized) is None:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "未知的创作类型")
+    return normalized
+
+
 def _prompt_snippet_out(snippet: PromptSnippet) -> PromptSnippetOut:
     """Convert one saved prompt into the public API representation."""
 
@@ -192,6 +203,7 @@ def _prompt_snippet_out(snippet: PromptSnippet) -> PromptSnippetOut:
         is_active=snippet.is_active,
         sort_order=snippet.sort_order,
         preset=snippet.preset or {},
+        skill_id=snippet.skill_id,
     )
 
 
@@ -2437,6 +2449,7 @@ async def admin_create_system_prompt(
 ) -> PromptSnippetOut:
     """Create one reusable prompt visible to every active user."""
 
+    skill_id = _validate_preset_skill_id(payload.skill_id)
     snippet = PromptSnippet(
         owner_id=admin.id,
         scope="system",
@@ -2446,6 +2459,7 @@ async def admin_create_system_prompt(
         is_active=payload.is_active,
         sort_order=payload.sort_order,
         preset=payload.preset,
+        skill_id=skill_id,
     )
     db.add(snippet)
     await db.commit()
@@ -2476,6 +2490,8 @@ async def admin_update_system_prompt(
         snippet.sort_order = payload.sort_order
     if payload.preset is not None:
         snippet.preset = payload.preset
+    if payload.skill_id is not None:
+        snippet.skill_id = _validate_preset_skill_id(payload.skill_id)
     await db.commit()
     await db.refresh(snippet)
     return _prompt_snippet_out(snippet)

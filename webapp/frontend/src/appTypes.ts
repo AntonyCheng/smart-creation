@@ -73,6 +73,7 @@ export type PromptSnippet = {
   is_active: boolean;
   sort_order: number;
   preset: PromptPreset;
+  skill_id: string | null;
 };
 export type PromptPreset = {
   requirements?: {

@@ -221,6 +221,8 @@ class PromptSnippetOut(BaseModel):
     is_active: bool = True
     sort_order: int = 0
     preset: dict = Field(default_factory=dict)
+    # NULL means the preset applies to every skill.
+    skill_id: str | None = None
 
 
 class AdminPromptSnippetCreateIn(BaseModel):
@@ -230,6 +232,8 @@ class AdminPromptSnippetCreateIn(BaseModel):
     is_active: bool = True
     sort_order: int = 0
     preset: dict = Field(default_factory=dict)
+    # Empty string means universal; absent stays default (ppt-master on create).
+    skill_id: str = "ppt-master"
 
 
 class AdminPromptSnippetUpdateIn(BaseModel):
@@ -239,6 +243,8 @@ class AdminPromptSnippetUpdateIn(BaseModel):
     is_active: bool | None = None
     sort_order: int | None = None
     preset: dict | None = None
+    # Only applied when the client sends the field; empty string means universal.
+    skill_id: str | None = None
 
 
 class JobCreateIn(BaseModel):

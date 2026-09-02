@@ -229,6 +229,8 @@ class PromptSnippet(Base):
     name: Mapped[str] = mapped_column(String(120))
     content: Mapped[str] = mapped_column(Text)
     preset: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Presets carry skill-shaped requirement fields; NULL means usable by every skill.
+    skill_id: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
     category: Mapped[str] = mapped_column(String(64), default="个人")
     used_count: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(
