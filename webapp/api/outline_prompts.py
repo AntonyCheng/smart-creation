@@ -80,6 +80,7 @@ def build_requirements_prompt(
     draft_text: str,
     *,
     is_typeset_content: bool = False,
+    typeset_source_is_material: bool = False,
 ) -> str:
     """Build a field-aware prompt that drafts an initial requirements guess.
 
@@ -91,7 +92,16 @@ def build_requirements_prompt(
 
     role = _ROLE_BY_SKILL.get(skill_id, "创作助手")
     field_lines = "\n".join(_describe_field(field) for field in fields)
-    if is_typeset_content:
+    if is_typeset_content and typeset_source_is_material:
+        # The user supplied the real document as an uploaded material rather
+        # than pasting it, so draft_text is at most a short instruction, not
+        # the body; the actual text arrives separately as the materials
+        # summary appended after this prompt.
+        source_description = (
+            "用户没有直接粘贴正文，正文来自随后列出的已上传材料摘要，请通读该摘要识别版式线索。"
+            + (f"用户在输入框补充了一句说明：{draft_text[:500]}" if draft_text.strip() else "")
+        )
+    elif is_typeset_content:
         source_description = (
             "以下是用户已经写好、即将直接排版的公文正文全文（不是需求描述，请通读全文识别版式线索）：\n"
             f"{draft_text[:6_000]}"

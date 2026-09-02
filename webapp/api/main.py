@@ -536,6 +536,7 @@ async def _infer_requirements_with_model(
     materials: list[ProjectMaterial] | None = None,
     *,
     is_typeset_content: bool = False,
+    typeset_source_is_material: bool = False,
 ) -> dict[str, str]:
     """Draft a best-guess structured requirements subset from raw user input.
 
@@ -548,7 +549,11 @@ async def _infer_requirements_with_model(
     credentials = await _active_model_credentials(db)
     if not credentials:
         raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "MODEL_NOT_CONFIGURED: 管理员尚未配置并验证默认模型。")
-    prompt = outline_prompts.build_requirements_prompt(skill_id, fields, draft_text, is_typeset_content=is_typeset_content)
+    prompt = outline_prompts.build_requirements_prompt(
+        skill_id, fields, draft_text,
+        is_typeset_content=is_typeset_content,
+        typeset_source_is_material=typeset_source_is_material,
+    )
     if materials:
         prompt = f"{prompt}\n{_material_planning_context(materials)}"
     provider_url, api_key, model_id = credentials
@@ -731,6 +736,7 @@ async def _generate_outline_with_model(
     requirements: dict,
     materials: list[ProjectMaterial] | None = None,
     skill_id: str = "ppt-master",
+    template_context: str = "",
 ) -> tuple[list[dict[str, str]], bool]:
     """Generate an outline using the administrator-verified default model."""
 
@@ -754,6 +760,8 @@ async def _generate_outline_with_model(
             "objective": str(requirements.get("objective") or "讲清楚主题"),
         }
     prompt = outline_prompts.build_planner_prompt(skill_id, values)
+    if template_context:
+        prompt = f"{prompt}\n\n{template_context}"
     if materials:
         prompt = f"{prompt}\n{_material_planning_context(materials)}"
     credentials = await _active_model_credentials(db)
@@ -1291,6 +1299,54 @@ def _material_planning_context(materials: list[ProjectMaterial]) -> str:
         excerpt = excerpt[:preview_budget]
         preview_budget -= len(excerpt)
         lines.append(f"- {material.original_filename} 摘要：{excerpt}")
+    return "\n".join(lines)
+
+
+_TEMPLATE_SPEC_OVERVIEW_LIMIT = 1_500
+
+
+def _template_planning_summary(design_spec_path: Path) -> str:
+    """Extract an outline-planning-relevant summary from one template's spec.
+
+    Reads only the design_spec.md frontmatter (summary/category/page_count)
+    and its "I. 模板概述" section (the imported page-role breakdown, e.g.
+    cover/toc/chapter/ending counts) — this is the signal the outline
+    planner actually needs to shape a structure that fits the template's
+    fixed page roster, without pulling in the full multi-section spec.
+    """
+
+    try:
+        text = design_spec_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+    frontmatter_match = re.match(r"^---\n(.*?)\n---\n", text, re.DOTALL)
+    summary = category = page_count = ""
+    if frontmatter_match:
+        for line in frontmatter_match.group(1).splitlines():
+            key, _, value = line.partition(":")
+            key = key.strip()
+            value = value.strip().strip('"')
+            if key == "summary":
+                summary = value
+            elif key == "category":
+                category = value
+            elif key == "page_count":
+                page_count = value
+    overview_match = re.search(r"## I\.[^\n]*\n(.*?)(?=\n## |\Z)", text, re.DOTALL)
+    overview = overview_match.group(1).strip()[:_TEMPLATE_SPEC_OVERVIEW_LIMIT] if overview_match else ""
+    if not summary and not overview:
+        return ""
+    lines = ["已选定演示模板，大纲设计必须贴合该模板的固定版式，不能忽略："]
+    detail = summary
+    if category:
+        detail += f"（分类：{category}）" if detail else f"分类：{category}"
+    if page_count:
+        detail += f"，共 {page_count} 页" if detail else f"共 {page_count} 页"
+    if detail:
+        lines.append(f"模板概况：{detail}")
+    if overview:
+        lines.append(f"模板页面构成：\n{overview}")
+    lines.append("请规划与模板页面角色数量相匹配的大纲结构（页数可与模板一致，也可合理复用某类页面增减），不要脱离模板已有的版式类型另起结构。")
     return "\n".join(lines)
 
 
@@ -2822,7 +2878,16 @@ async def generate_project_creative_outline(
             .order_by(ProjectMaterial.created_at.asc())
         )
     ).scalars().all()
-    outline, _ = await _generate_outline_with_model(db, requirements, materials, skill_id=project.skill_id)
+    template_context = ""
+    if state.selected_template_id:
+        selected_template = await db.get(Template, state.selected_template_id)
+        template_root = str((selected_template.meta or {}).get("template_root") or "").strip() if selected_template else ""
+        if selected_template and template_root:
+            spec_path = _template_workspace_path(selected_template) / template_root / "templates" / "design_spec.md"
+            template_context = _template_planning_summary(spec_path)
+    outline, _ = await _generate_outline_with_model(
+        db, requirements, materials, skill_id=project.skill_id, template_context=template_context
+    )
     state.outline = outline
     state.stage = "outline"
     project.updated_at = datetime.now(UTC)
@@ -2865,14 +2930,23 @@ async def infer_project_creative_requirements(
     requirements = dict(state.requirements or {})
     is_typeset = bool(mode_definition and mode_definition.get("id") == "typeset")
     if is_typeset:
-        # Typeset's composer input is the literal document body, not a
-        # description; carry it through verbatim and only ask the model to
-        # identify format-stage fields (doc type, title, …) from the text.
-        requirements["content"] = draft_text[:200_000]
         fields = list(mode_definition.get("fields") or [])
-        inferred = await _infer_requirements_with_model(
-            db, project.skill_id, fields, draft_text, materials, is_typeset_content=True
-        )
+        if materials:
+            # An uploaded material is the real document source; the composer
+            # text is at most a short instruction, not the body, so it must
+            # not overwrite the content field with the wrong text. Field
+            # recognition reads the materials' extracted excerpts instead.
+            inferred = await _infer_requirements_with_model(
+                db, project.skill_id, fields, draft_text, materials,
+                is_typeset_content=True, typeset_source_is_material=True,
+            )
+        else:
+            # No material was attached, so the composer input is the only
+            # channel for the document body; carry it through verbatim.
+            requirements["content"] = draft_text[:200_000]
+            inferred = await _infer_requirements_with_model(
+                db, project.skill_id, fields, draft_text, materials, is_typeset_content=True
+            )
         requirements.update(inferred)
     else:
         fields = list(mode_definition["fields"]) if mode_definition else _PPT_REQUIREMENT_FIELDS

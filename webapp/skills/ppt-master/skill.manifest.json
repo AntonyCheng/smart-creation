@@ -25,7 +25,11 @@
     "authoring_root": {
       "marker_dir": "svg_output"
     },
-    "progress_dirs": ["svg_output", "exports", "validation"]
+    "progress_dirs": [
+      "svg_output",
+      "exports",
+      "validation"
+    ]
   },
   "agent": {
     "entry_doc": "skills/ppt-master/SKILL.md",
@@ -60,26 +64,78 @@
     "composer_placeholder": "描述你想做的 PPT，例如：为集团管理层准备一份 15 页的云业务季度经营汇报……",
     "create_button_label": "创建 PPT",
     "projects_nav_label": "我的 PPT",
-    "quick_starts": ["季度经营分析", "产品发布方案", "行业解决方案"],
+    "quick_starts": [
+      "季度经营分析",
+      "产品发布方案",
+      "行业解决方案"
+    ],
     "stages": [
-      { "id": "requirements", "label": "需求梳理", "description": "确认表达目标" },
-      { "id": "outline", "label": "大纲设计", "description": "逐页组织内容" },
-      { "id": "template", "label": "选择模板", "description": "确定视觉表达" },
-      { "id": "generating", "label": "生成 PPT", "description": "实时生成任务" },
-      { "id": "preview", "label": "预览精修", "description": "查看与继续修改" }
+      {
+        "id": "requirements",
+        "label": "需求梳理",
+        "description": "确认表达目标"
+      },
+      {
+        "id": "template",
+        "label": "选择模板",
+        "description": "确定视觉表达"
+      },
+      {
+        "id": "outline",
+        "label": "大纲设计",
+        "description": "逐页组织内容"
+      },
+      {
+        "id": "generating",
+        "label": "生成 PPT",
+        "description": "实时生成任务"
+      },
+      {
+        "id": "preview",
+        "label": "预览精修",
+        "description": "查看与继续修改"
+      }
     ],
     "outline": {
       "item_label": "页",
       "generator_prompt_key": "ppt-master",
       "fields": [
-        { "name": "title", "label": "页面标题", "required": true, "max_length": 160 },
-        { "name": "purpose", "label": "本页目标", "required": false, "max_length": 500 },
-        { "name": "content", "label": "本页内容", "required": false, "max_length": 4000 },
-        { "name": "kind", "label": "页面类型", "required": false, "max_length": 64, "default": "内容页" },
-        { "name": "notes", "label": "讲解重点", "required": false, "max_length": 2000 }
+        {
+          "name": "title",
+          "label": "页面标题",
+          "required": true,
+          "max_length": 160
+        },
+        {
+          "name": "purpose",
+          "label": "本页目标",
+          "required": false,
+          "max_length": 500
+        },
+        {
+          "name": "content",
+          "label": "本页内容",
+          "required": false,
+          "max_length": 4000
+        },
+        {
+          "name": "kind",
+          "label": "页面类型",
+          "required": false,
+          "max_length": 64,
+          "default": "内容页"
+        },
+        {
+          "name": "notes",
+          "label": "讲解重点",
+          "required": false,
+          "max_length": 2000
+        }
       ],
       "first_item_is_title_page": true
     },
-    "preview_kinds": ["svg"]
+    "preview_kinds": [
+      "svg"
+    ]
   }
 }
