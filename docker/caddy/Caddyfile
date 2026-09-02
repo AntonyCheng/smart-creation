@@ -5,7 +5,7 @@
 		X-Frame-Options "SAMEORIGIN"
 		Referrer-Policy "strict-origin-when-cross-origin"
 	}
-	handle /onlyoffice/* {
+	handle_path /onlyoffice/* {
 		reverse_proxy pptmaster-onlyoffice:80
 	}
 	reverse_proxy pptmaster-api:8000
