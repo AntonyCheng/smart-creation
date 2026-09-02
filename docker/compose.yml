@@ -140,6 +140,11 @@ services:
       # Internal deployment behind Caddy; tokens for callbacks are enforced by
       # the API instead (HMAC-signed editor URLs). Revisit JWT before exposing.
       - JWT_ENABLED=false
+      # The editor URLs point at the platform's container-network address, which
+      # DS's anti-SSRF shield would otherwise refuse as a private IP. Approved
+      # for this closed internal deployment (URLs are HMAC-signed by the API).
+      - ALLOW_PRIVATE_IP_ADDRESS=true
+      - ALLOW_META_IP_ADDRESS=true
     volumes:
       # GB/T official-document fonts so the editing view matches previews.
       - ../skills/gongwen/assets/fonts:/usr/share/fonts/truetype/custom:ro
