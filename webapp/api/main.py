@@ -4,11 +4,15 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
+import hmac
 import ipaddress
 import json
 import logging
 import re
 import shutil
+import tempfile
+import time
 import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import AsyncIterator
@@ -3512,6 +3516,289 @@ async def save_editor_slide(
         filename=Path(artifact.relative_path).name,
         size_bytes=artifact.size_bytes,
     )
+
+
+# --- OnlyOffice document editing (manual DOCX/PPTX revisions) ---------------
+
+
+_EDITOR_KINDS = ("docx", "pptx")
+_EDITOR_TOKEN_TTL_SECONDS = 7 * 24 * 3600
+
+
+def _editor_secret() -> bytes:
+    key = (get_settings().config_encryption_key or "").encode("utf-8")
+    if not key:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "缺少服务端密钥，无法使用在线编辑")
+    return hashlib.sha256(b"pptmaster-onlyoffice-editor:" + key).digest()
+
+
+def _editor_pack_token(project_id: UUID, kind: str, job_id: UUID) -> str:
+    expires = int(time.time()) + _EDITOR_TOKEN_TTL_SECONDS
+    payload = f"{project_id}|{kind}|{job_id}|{expires}"
+    encoded = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii").rstrip("=")
+    signature = hmac.new(_editor_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+    return f"{encoded}.{signature}"
+
+
+def _editor_read_token(token: str) -> tuple[UUID, str, UUID]:
+    try:
+        encoded, signature = token.rsplit(".", 1)
+        expected = hmac.new(_editor_secret(), encoded.encode("ascii"), hashlib.sha256).hexdigest()
+        if not hmac.compare_digest(signature, expected):
+            raise ValueError("签名不匹配")
+        padded = encoded + "=" * (-len(encoded) % 4)
+        project_id_text, kind, job_id_text, expires_text = base64.urlsafe_b64decode(padded).decode("utf-8").split("|")
+        if int(expires_text) < time.time():
+            raise ValueError("编辑会话已过期，请重新打开")
+        return UUID(project_id_text), kind, UUID(job_id_text)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "编辑会话无效或已过期，请重新打开编辑器") from exc
+
+
+@app.get("/api/v1/projects/{project_id}/doc-editor-config")
+async def doc_editor_config(
+    project_id: UUID,
+    kind: str = "docx",
+    project: Project = Depends(get_owned_project),
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """Return OnlyOffice editor initialization parameters for one project."""
+
+    if kind not in _EDITOR_KINDS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "不支持的编辑类型")
+    artifact_kind = ArtifactKind("docx") if kind == "docx" else ArtifactKind("pptx")
+    artifact_stmt = (
+        select(Artifact, Job)
+        .join(Job, Job.id == Artifact.job_id)
+        .where(
+            Artifact.project_id == project.id,
+            Artifact.kind == artifact_kind,
+            Job.status == JobStatus.SUCCEEDED,
+        )
+        .order_by(Artifact.created_at.desc())
+        .limit(1)
+    )
+    row = (await db.execute(artifact_stmt)).first()
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "暂无可编辑的文件，请先生成一次")
+    artifact, job = row
+    artifact_path = (settings.workspace_root / artifact.relative_path).resolve()
+    if not artifact_path.is_file():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "编辑目标文件不存在或已被清理")
+    payload = artifact_path.read_bytes()
+    doc_key = f"{project.id}_{kind}_" + hashlib.sha256(payload).hexdigest()[:20]
+    token = _editor_pack_token(project.id, kind, job.id)
+    internal_base = get_settings().editor_internal_base.rstrip("/")
+    return {
+        "kind": kind,
+        "docKey": doc_key,
+        "fileType": kind,
+        "title": Path(artifact.relative_path).name,
+        "documentUrl": f"{internal_base}/api/v1/editor/file?token={token}",
+        "callbackUrl": f"{internal_base}/api/v1/editor/callback?token={token}",
+        "apiScript": "/onlyoffice/web-apps/apps/api/documents/api.js",
+        "jobId": str(job.id),
+    }
+
+
+async def _editor_resolve_target(token: str) -> tuple[Project, Job, Path, str]:
+    """Resolve the token-authorized editor target file without a user session."""
+
+    project_id, kind, job_id = _editor_read_token(token)
+    if kind not in _EDITOR_KINDS:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, "不支持的编辑类型")
+    async with SessionLocal() as db:
+        artifact = (
+            await db.execute(
+                select(Artifact)
+                .where(
+                    Artifact.job_id == job_id,
+                    Artifact.kind == (ArtifactKind("docx") if kind == "docx" else ArtifactKind("pptx")),
+                )
+                .order_by(Artifact.created_at.desc())
+                .limit(1)
+            )
+        ).scalar_one_or_none()
+        project = await db.get(Project, project_id)
+        job = await db.get(Job, job_id)
+        if not artifact or not project or not job:
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "编辑目标不存在")
+        artifact_path = (_workspace_path(project) / artifact.relative_path).resolve()
+        project_root = _workspace_path(project).resolve()
+        if project_root not in artifact_path.parents or not artifact_path.is_file():
+            raise HTTPException(status.HTTP_404_NOT_FOUND, "编辑目标文件不存在或已被清理")
+        return project, job, artifact_path, kind
+
+
+@app.get("/api/v1/editor/file")
+async def editor_file(token: str) -> FileResponse:
+    """Serve the edited document to the OnlyOffice container (token-authorized)."""
+
+    _project, _job, artifact_path, kind = await _editor_resolve_target(token)
+    media = (
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        if kind == "docx"
+        else "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+    )
+    return FileResponse(artifact_path, media_type=media)
+
+
+def _parse_docx_paragraphs(path: Path) -> list[dict]:
+    """Extract ordering-relevant text/format facts for input.json resync."""
+
+    namespace = "{http://schemas.openxmlformats.org/wordprocessingml/2006/main}"
+    with zipfile.ZipFile(path) as archive:
+        root = ET.fromstring(archive.read("word/document.xml"))
+    paragraphs: list[dict] = []
+    for node in root.iter(f"{namespace}p"):
+        text = "".join(t.text or "" for t in node.iter(f"{namespace}t")).strip()
+        if not text:
+            continue
+        fonts: list[str] = []
+        colors: list[str] = []
+        sizes: list[int] = []
+        align = ""
+        for props in node.iter(f"{namespace}pPr"):
+            jc = props.find(f"{namespace}jc")
+            if jc is not None:
+                align = str(jc.get(f"{namespace}val") or "")
+        for rpr in node.iter(f"{namespace}rPr"):
+            fonts_node = rpr.find(f"{namespace}rFonts")
+            if fonts_node is not None:
+                font = str(fonts_node.get(f"{namespace}eastAsia") or "")
+                if font:
+                    fonts.append(font)
+            color = rpr.find(f"{namespace}color")
+            if color is not None:
+                colors.append(str(color.get(f"{namespace}val") or ""))
+            size = rpr.find(f"{namespace}sz")
+            if size is not None:
+                try:
+                    sizes.append(int(str(size.get(f"{namespace}val") or "0")))
+                except ValueError:
+                    continue
+        paragraphs.append({
+            "text": text,
+            "align": align,
+            "font": fonts[0] if fonts else "",
+            "color": colors[0] if colors else "",
+            "size": max(sizes) if sizes else 0,
+        })
+    return paragraphs
+
+
+def _sync_gongwen_input_json(docx_path: Path) -> None:
+    """Resync the generation source input.json from a manually edited DOCX.
+
+    AI refinements regenerate the DOCX from input.json, so manual edits must
+    update it or they would be silently overwritten by the next chat edit.
+    """
+
+    input_path = next(
+        (parent / "input.json" for parent in docx_path.parents if (parent / "input.json").is_file()),
+        None,
+    )
+    if not input_path:
+        return
+    try:
+        data = json.loads(input_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+    paragraphs = _parse_docx_paragraphs(docx_path)
+    if not paragraphs:
+        return
+
+    def flush(paragraph: dict) -> dict:
+        kind = "body"
+        if paragraph["font"] == "黑体":
+            kind = "heading1"
+        elif paragraph["font"] == "楷体_GB2312":
+            kind = "heading2"
+        return {"type": kind, "text": paragraph["text"]}
+
+    updated: dict[str, object] = {}
+    number_index = next(
+        (i for i, item in enumerate(paragraphs) if "〔" in item["text"] and item["text"].rstrip().endswith("号")),
+        None,
+    )
+    if number_index is not None:
+        masthead = [item["text"] for item in paragraphs[:number_index] if item["color"] == "FF0000"]
+        if masthead:
+            updated["issuer_mark"] = "".join(masthead)
+        updated["document_number"] = paragraphs[number_index]["text"]
+        rest = paragraphs[number_index + 1:]
+    else:
+        rest = paragraphs
+
+    title_paragraphs: list[dict] = []
+    body_start = 0
+    for i, item in enumerate(rest):
+        if item["font"] == "方正小标宋简体" or (item["align"] == "center" and item["size"] >= 30):
+            title_paragraphs.append(item)
+            body_start = i + 1
+        elif title_paragraphs:
+            body_start = i
+            break
+    if title_paragraphs:
+        updated["title"] = "".join(item["text"] for item in title_paragraphs)
+        updated["title_lines"] = [item["text"] for item in title_paragraphs]
+
+    remaining = rest[body_start:]
+    recipient_index = next(
+        (i for i, item in enumerate(remaining) if item["text"].endswith(("：", ":")) and len(item["text"]) <= 60),
+        None,
+    )
+    if recipient_index is not None:
+        updated["recipient"] = remaining[recipient_index]["text"]
+        blocks = [flush(item) for item in remaining[recipient_index + 1:]]
+        blocks = [item for item in blocks if item["text"]]
+        if blocks:
+            updated["blocks"] = blocks
+
+    if updated:
+        data.update(updated)
+        input_path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+@app.post("/api/v1/editor/callback")
+async def editor_callback(token: str, request: Request) -> dict:
+    """Receive OnlyOffice save callbacks (status 2/6 carry the saved file)."""
+
+    _project, job, artifact_path, kind = await _editor_resolve_target(token)
+    body = await request.json()
+    save_status = int(body.get("status") or 0)
+    if save_status not in (2, 6):
+        return {"error": 0}
+    download_url = str(body.get("url") or "")
+    if not download_url:
+        return {"error": 0}
+
+    def download() -> bytes:
+        with urlopen(UrlRequest(download_url), timeout=120) as response:
+            return response.read()
+
+    try:
+        payload = await asyncio.to_thread(download)
+    except (OSError, URLError, HTTPError) as exc:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "无法下载编辑后的文件") from exc
+    artifact_path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(dir=artifact_path.parent, delete=False) as handle:
+        handle.write(payload)
+        temp_path = Path(handle.name)
+    temp_path.replace(artifact_path)
+
+    if kind == "docx":
+        await asyncio.to_thread(_sync_gongwen_input_json, artifact_path)
+        message = "OnlyOffice 手动编辑已保存，并已同步回创作源。"
+    else:
+        message = "OnlyOffice 定稿已保存。"
+    async with SessionLocal() as db:
+        db.add(JobEvent(job_id=job.id, event_type="editor_export", payload={"status": "succeeded", "text": message}))
+        await db.commit()
+    return {"error": 0}
 
 
 @app.get("/")

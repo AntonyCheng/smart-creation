@@ -1,5 +1,6 @@
 import { Dispatch, FormEvent, ReactElement, ReactNode, SetStateAction, useCallback, useEffect, useMemo, useState } from "react";
 import { PresentationEditor } from "./PresentationEditor";
+import { DocEditorPage } from "./DocEditorPage";
 import { CreativeWorkspace } from "./CreativeWorkspace";
 import { AdminRouteTab, navigate, parseRoute, pathForNav } from "./routes";
 import { PromptsPage as AssetPromptsPage, TemplatesPage as AssetTemplatesPage } from "./AssetPages";
@@ -730,6 +731,7 @@ export function ProductApp() {
   }
 
   if (route.kind === "editor") return <PresentationEditor projectId={route.projectId} jobId={route.jobId} />;
+  if (route.kind === "doc-editor" && user) return <DocEditorPage projectId={route.projectId} docKind={route.docKind} />;
 
   // While the browser session is still being verified, render nothing instead
   // of the login screen so full-page navigation never flashes it.

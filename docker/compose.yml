@@ -128,6 +128,26 @@ services:
     restart: unless-stopped
     networks: [pptmaster-network]
 
+  pptmaster-onlyoffice:
+    # docker.io is unreachable from this host; DaoCloud mirror carries the same image.
+    image: docker.m.daocloud.io/onlyoffice/documentserver:latest
+    container_name: pptmaster-onlyoffice
+    environment:
+      # Internal deployment behind Caddy; tokens for callbacks are enforced by
+      # the API instead (HMAC-signed editor URLs). Revisit JWT before exposing.
+      - JWT_ENABLED=false
+    volumes:
+      # GB/T official-document fonts so the editing view matches previews.
+      - ../skills/gongwen/assets/fonts:/usr/share/fonts/truetype/custom:ro
+      - ./data/onlyoffice/logs:/var/log/onlyoffice
+      - ./data/onlyoffice/data:/var/www/onlyoffice/Data
+      - ./data/onlyoffice/lib:/var/lib/onlyoffice
+    depends_on:
+      pptmaster-api:
+        condition: service_healthy
+    restart: unless-stopped
+    networks: [pptmaster-network]
+
   pptmaster-caddy:
     image: caddy:2.8.4-alpine
     container_name: pptmaster-caddy

@@ -33,6 +33,11 @@ class Settings(BaseSettings):
         default=None,
         validation_alias="PPTMASTER_CONFIG_ENCRYPTION_KEY",
     )
+    # Base URL the OnlyOffice container uses to reach this API (container DNS).
+    editor_internal_base: str = Field(
+        default="http://pptmaster-api:8000",
+        validation_alias="PPTMASTER_EDITOR_INTERNAL_BASE",
+    )
     session_cookie_name: str = "pm_session"
     session_ttl_hours: int = Field(default=168, ge=1, le=24 * 31)
     invite_ttl_hours: int = Field(default=168, ge=1, le=24 * 31)
