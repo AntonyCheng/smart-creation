@@ -255,7 +255,7 @@ def _run_semantic_template_review(template_root: Path, import_root: Path, manife
     prompt = f"""You are reviewing an imported PowerPoint template workspace.
 
 Read the evidence files at {authoring_summary}, {conversion_report}, and the
-source manifest at {import_root / 'manifest.json'}. Read the materialized SVG
+source manifest at {import_root / 'analysis' / 'manifest.json'}. Read the materialized SVG
 prototypes under {template_root / 'templates'} as needed. Do not edit, rename,
 copy, or delete any SVG, image, native payload, or machine manifest. Do not
 invent visual facts that are not supported by the evidence.
@@ -309,19 +309,9 @@ def main() -> int:
         "both",
     ]
     _run_step("extracting", "正在读取页面、母版和主题信息", command)
-    _run_step(
-        "authoring_view",
-        "正在准备可编辑的模板结构",
-        [
-            sys.executable,
-            str(SKILL_ROOT / "scripts/svg_authoring_view.py"),
-            str(import_root / "svg"),
-            "-o",
-            str(import_root / "authoring-svg"),
-            "--projection-kind",
-            "layered",
-        ],
-    )
+    # pptx_template_import --inheritance-mode both already publishes the layered
+    # authoring-svg/ bundle (plus its summary) that mirror_template_materialize
+    # consumes, so no separate authoring-view projection runs here.
     # Materialization touches each imported SVG and native payload repeatedly.
     # Work on the container-local tmpfs to avoid Windows bind-mount metadata latency.
     with tempfile.TemporaryDirectory(prefix="pptmaster-template-") as temporary:
@@ -347,7 +337,7 @@ def main() -> int:
         shutil.copytree(local_template, template_root)
         _emit_progress("materializing", "正在生成可复用模板完成")
     _emit_progress("summarizing", "正在整理模板页数、配色和字体摘要")
-    manifest = json.loads((import_root / "manifest.json").read_text(encoding="utf-8"))
+    manifest = json.loads((import_root / "analysis" / "manifest.json").read_text(encoding="utf-8"))
     pages = manifest.get("slides") or manifest.get("pages") or []
     theme = manifest.get("theme") or {}
     fonts = manifest.get("fonts") or []
@@ -381,7 +371,7 @@ def main() -> int:
         "template_root": "deck",
         "colors": theme.get("colors", theme.get("themeColors", [])) if isinstance(theme, dict) else [],
         "fonts": fonts,
-        "source_manifest": "import/manifest.json",
+        "source_manifest": "import/analysis/manifest.json",
     }
     print(json.dumps({"type": "result", "summary": return_data}, ensure_ascii=False), flush=True)
     return 0
