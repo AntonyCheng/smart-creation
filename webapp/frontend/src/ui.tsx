@@ -1,4 +1,4 @@
-import { App as AntdApp, Button, Empty, Popconfirm, Upload } from "antd";
+import { App as AntdApp, Button, Empty, Popconfirm, Select, Upload } from "antd";
 import type { ButtonProps, UploadProps } from "antd";
 import { LoaderCircle } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -23,6 +23,20 @@ export function AsyncButton(props: ButtonHTMLAttributes<HTMLButtonElement> & { l
     {loading && <LoaderCircle className="zc-spin" size={14} aria-hidden="true" />}
     {children}
   </button>;
+}
+
+export const PAGE_RANGE_OPTIONS = ["1-4 页", "5-7 页", "8-10 页", "11-12 页", "13-15 页", "16-19 页", "20 页以上"];
+export const DEFAULT_PAGE_RANGE = "8-10 页";
+
+export function PageRangeSelect(props: { value?: string; onChange: (value: string) => void }) {
+  return <Select
+    className="kppt-page-range-select"
+    popupClassName="kppt-page-range-select-dropdown"
+    value={props.value || DEFAULT_PAGE_RANGE}
+    onChange={props.onChange}
+    options={PAGE_RANGE_OPTIONS.map((item) => ({ value: item, label: item }))}
+    aria-label="页数范围"
+  />;
 }
 
 export function AssetEmptyState(props: { title: string; description: string; action?: ReactNode; className?: string }) {
