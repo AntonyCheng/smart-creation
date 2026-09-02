@@ -3780,14 +3780,31 @@ async def editor_callback(token: str, request: Request) -> dict:
     if not download_url:
         return {"error": 0}
 
-    def download() -> bytes:
-        with urlopen(UrlRequest(download_url), timeout=120) as response:
+    # DS builds saved-file URLs from the browser-facing address it was reached
+    # on (e.g. 127.0.0.1:<public port>), which the API container cannot reach.
+    # The same path always exists on the DS container DNS name, so try that
+    # first and keep the original URL as fallback.
+    candidates = [download_url]
+    parsed = urlsplit(download_url)
+    ds_port = get_settings().editor_public_port
+    if parsed.hostname in {"127.0.0.1", "localhost"} and parsed.port == ds_port:
+        internal = parsed._replace(scheme="http", netloc=f"pptmaster-onlyoffice")
+        candidates.insert(0, internal.geturl())
+
+    def download(url: str) -> bytes:
+        with urlopen(UrlRequest(url), timeout=120) as response:
             return response.read()
 
-    try:
-        payload = await asyncio.to_thread(download)
-    except (OSError, URLError, HTTPError) as exc:
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "无法下载编辑后的文件") from exc
+    payload: bytes | None = None
+    last_error: Exception | None = None
+    for candidate in candidates:
+        try:
+            payload = await asyncio.to_thread(download, candidate)
+            break
+        except (OSError, URLError, HTTPError) as exc:
+            last_error = exc
+    if payload is None:
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "无法下载编辑后的文件") from last_error
     artifact_path.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.NamedTemporaryFile(dir=artifact_path.parent, delete=False) as handle:
         handle.write(payload)
