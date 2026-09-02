@@ -98,6 +98,7 @@ from .schemas import (
     ProviderUpdateIn,
     ProjectCreateIn,
     ProjectCreativeOutlineIn,
+    ProjectCreativeRequirementsInferIn,
     ProjectCreativeStateOut,
     ProjectCreativeStateUpdateIn,
     ProjectOut,
@@ -472,6 +473,99 @@ def _typeset_prompt(requirements: dict, note: str = "") -> str:
         "完成后按 skill 流程完成结构检查与渲染检查，并输出对话审核单。",
     ])
     return "\n".join(lines)
+
+
+# PPT requirements have no manifest-declared mode fields (ppt-master defines
+# no "modes"), so this mirrors RequirementsPanel's fixed field set in the
+# same shape as a gongwen mode's manifest fields, letting the inference
+# helper below stay skill-agnostic.
+_BACKEND_PAGE_RANGE_OPTIONS = ["1-4 页", "5-7 页", "8-10 页", "11-12 页", "13-15 页", "16-19 页", "20 页以上"]
+_PPT_REQUIREMENT_FIELDS: list[dict[str, object]] = [
+    {"name": "topic", "label": "PPT 主题", "type": "text", "max_length": 160, "options": []},
+    {"name": "scenario", "label": "使用场景", "type": "text", "max_length": 120, "options": []},
+    {"name": "audience", "label": "目标受众", "type": "text", "max_length": 120, "options": []},
+    {"name": "page_range", "label": "页数范围", "type": "select", "max_length": 20, "options": _BACKEND_PAGE_RANGE_OPTIONS},
+    {"name": "style", "label": "整体风格", "type": "text", "max_length": 120, "options": []},
+    {"name": "objective", "label": "核心目标", "type": "text", "max_length": 500, "options": []},
+]
+
+
+def _extract_json_object(raw: str) -> dict:
+    """Parse strict JSON or a fenced JSON object returned by the model."""
+
+    candidate = raw.strip()
+    fenced = re.search(r"```(?:json)?\s*(.*?)```", candidate, flags=re.DOTALL | re.IGNORECASE)
+    if fenced:
+        candidate = fenced.group(1).strip()
+    start = candidate.find("{")
+    end = candidate.rfind("}")
+    if start < 0 or end <= start:
+        raise ValueError("模型未返回 JSON 对象")
+    decoded = json.loads(candidate[start : end + 1])
+    if not isinstance(decoded, dict):
+        raise ValueError("模型返回的内容不是 JSON 对象")
+    return decoded
+
+
+def _validate_requirement_values(fields: list[dict], decoded: dict) -> dict[str, str]:
+    """Keep only values that respect each field's type/options/length."""
+
+    result: dict[str, str] = {}
+    for field in fields:
+        name = str(field.get("name") or "")
+        if not name or name not in decoded:
+            continue
+        value = str(decoded.get(name) or "").strip()
+        if not value:
+            continue
+        options = field.get("options") or []
+        if field.get("type") == "select" and options and value not in options:
+            continue  # An invalid enum guess is dropped, not coerced.
+        max_length = field.get("max_length")
+        if isinstance(max_length, int) and max_length > 0:
+            value = value[:max_length]
+        result[name] = value
+    return result
+
+
+async def _infer_requirements_with_model(
+    db: AsyncSession,
+    skill_id: str,
+    fields: list[dict],
+    draft_text: str,
+    materials: list[ProjectMaterial] | None = None,
+    *,
+    is_typeset_content: bool = False,
+) -> dict[str, str]:
+    """Draft a best-guess structured requirements subset from raw user input.
+
+    Mirrors _generate_outline_with_model's provider-calling convention; the
+    caller always shows the result on a confirmation stage, never uses it to
+    skip that step, and a failure here must surface to the user rather than
+    fail silently (they are told to configure the fields by hand).
+    """
+
+    credentials = await _active_model_credentials(db)
+    if not credentials:
+        raise HTTPException(status.HTTP_503_SERVICE_UNAVAILABLE, "MODEL_NOT_CONFIGURED: 管理员尚未配置并验证默认模型。")
+    prompt = outline_prompts.build_requirements_prompt(skill_id, fields, draft_text, is_typeset_content=is_typeset_content)
+    if materials:
+        prompt = f"{prompt}\n{_material_prompt_context(materials)}"
+    provider_url, api_key, model_id = credentials
+    try:
+        raw = await asyncio.to_thread(
+            _provider_request,
+            provider_url,
+            api_key,
+            model_id,
+            prompt,
+            "你是创作需求梳理助手，只返回严格 JSON 对象，不要 Markdown，不编造用户未提及的具体事实。",
+        )
+        decoded = _extract_json_object(raw)
+    except (OSError, URLError, TimeoutError, ValueError, json.JSONDecodeError, HTTPException, RuntimeError) as exc:
+        logger.warning("Requirements inference failed: %s", exc)
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, "MODEL_UNAVAILABLE: 需求梳理模型暂时不可用，请手动填写各项内容。") from exc
+    return _validate_requirement_values(fields, decoded)
 
 
 def _parse_outline_response(raw: str, topic: str, skill_id: str = "ppt-master") -> list[dict[str, str]]:
@@ -2706,6 +2800,62 @@ async def generate_project_creative_outline(
     outline, _ = await _generate_outline_with_model(db, requirements, materials, skill_id=project.skill_id)
     state.outline = outline
     state.stage = "outline"
+    project.updated_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(state)
+    return _creative_state_out(state)
+
+
+@app.post("/api/v1/projects/{project_id}/creative-requirements-infer", response_model=ProjectCreativeStateOut)
+async def infer_project_creative_requirements(
+    payload: ProjectCreativeRequirementsInferIn,
+    project: Project = Depends(get_owned_project),
+    db: AsyncSession = Depends(get_db),
+) -> ProjectCreativeStateOut:
+    """Draft an initial structured requirements guess from the composer's raw text.
+
+    Called once, right after a fresh project is created without an applied
+    preset. The model's guesses always land on the requirements (or format,
+    for typeset) confirmation stage for the user to review and edit — this
+    never skips that step. A model failure surfaces as an error so the
+    caller can tell the user to configure the fields by hand, rather than
+    silently keeping generic defaults.
+    """
+
+    state = await db.get(ProjectCreativeState, project.id)
+    if state is None:
+        state = ProjectCreativeState(project_id=project.id)
+        db.add(state)
+        await db.flush()
+    skill_manifest = _registered_skill(project.skill_id)
+    mode_definition = _skill_mode(skill_manifest, project.mode)
+    draft_text = payload.draft.strip()
+    materials = (
+        await db.execute(
+            select(ProjectMaterial)
+            .where(ProjectMaterial.project_id == project.id, ProjectMaterial.status == "ready")
+            .order_by(ProjectMaterial.created_at.asc())
+        )
+    ).scalars().all()
+    requirements = dict(state.requirements or {})
+    is_typeset = bool(mode_definition and mode_definition.get("id") == "typeset")
+    if is_typeset:
+        # Typeset's composer input is the literal document body, not a
+        # description; carry it through verbatim and only ask the model to
+        # identify format-stage fields (doc type, title, …) from the text.
+        requirements["content"] = draft_text[:200_000]
+        fields = list(mode_definition.get("fields") or [])
+        inferred = await _infer_requirements_with_model(
+            db, project.skill_id, fields, draft_text, materials, is_typeset_content=True
+        )
+        requirements.update(inferred)
+    else:
+        fields = list(mode_definition["fields"]) if mode_definition else _PPT_REQUIREMENT_FIELDS
+        inferred = await _infer_requirements_with_model(db, project.skill_id, fields, draft_text, materials)
+        requirements.update(inferred)
+        if not str(requirements.get("topic") or "").strip():
+            requirements["topic"] = draft_text[:160]
+    state.requirements = requirements
     project.updated_at = datetime.now(UTC)
     await db.commit()
     await db.refresh(state)

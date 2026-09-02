@@ -129,6 +129,17 @@ class PromptPresetOutlineGenerateIn(BaseModel):
     requirements: dict = Field(default_factory=dict)
 
 
+class ProjectCreativeRequirementsInferIn(BaseModel):
+    """Ask the model to draft an initial structured requirements guess.
+
+    ``draft`` is the raw text the user typed in the home composer before any
+    field-by-field editing; only called once, right after project creation,
+    and only when no saved preset already supplied structured requirements.
+    """
+
+    draft: str = Field(min_length=1, max_length=20_000)
+
+
 class ProjectCreativeStateOut(BaseModel):
     project_id: UUID
     stage: str

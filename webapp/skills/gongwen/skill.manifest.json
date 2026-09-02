@@ -94,7 +94,7 @@
         "id": "typeset",
         "label": "公文排版",
         "description": "粘贴或上传已有内容，按 GB/T 9704 排出规范版式，正文逐字保留",
-        "composer_placeholder": "描述你要排版的公文，例如：排版一份 2026 年安全生产检查情况通报，正文已拟好……",
+        "composer_placeholder": "请直接粘贴或输入要排版的公文正文全文，系统会据此识别文种、标题等版式要素……",
         "stages": [
           { "id": "content", "label": "内容录入", "description": "粘贴或上传公文内容" },
           { "id": "format", "label": "版式要素", "description": "确认红头与版记要素" },

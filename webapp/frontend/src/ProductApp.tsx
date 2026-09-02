@@ -214,6 +214,10 @@ export function ProductApp() {
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
+  // The composer's raw text for the just-created project, consumed exactly
+  // once by CreativeWorkspace to draft an initial requirements guess; null
+  // when a saved preset already supplied structured requirements.
+  const [pendingInferDraft, setPendingInferDraft] = useState<{ projectId: string; draft: string } | null>(null);
   const [selectedPromptPreset, setSelectedPromptPreset] = useState<PromptSnippet | null>(null);
   const [projectQuery, setProjectQuery] = useState("");
   const [projectView, setProjectView] = useState<"grid" | "list">("grid");
@@ -507,6 +511,10 @@ export function ProductApp() {
             ? { ...snippet, used_count: snippet.used_count + 1 }
             : snippet
         )));
+      } else {
+        // A saved preset already supplies structured requirements; only run
+        // AI inference on the free-typed composer text.
+        setPendingInferDraft({ projectId: project.id, draft: content });
       }
       await uploadMaterialFiles(project.id, pendingMaterialFiles);
       setPendingMaterialFiles([]);
@@ -742,7 +750,7 @@ export function ProductApp() {
   }
 
   if (route.kind === "workspace" && activeProject?.id === route.projectId) {
-    return <><NoticeHost message={notice} onClose={() => setNotice("")} /><CreativeWorkspace project={activeProject!} mode={activeProject!.mode} job={activeJob} workingJob={workingJob} skill={skills.find((skill) => skill.id === activeProject!.skill_id) ?? null} templates={readyTemplates} artifacts={artifacts} events={events} materials={materialsByProject[activeProject!.id] ?? []} materialUploading={materialUploading} onUploadMaterials={(files) => void uploadMaterialFiles(activeProject!.id, files)} onDeleteMaterial={(materialId) => void deleteMaterial(activeProject!.id, materialId)} initialTemplateId={selectedTemplateId} baseJobId={refinementBaseJob?.id ?? null} onBack={() => startDraft()} onGenerate={(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled) => startGeneration(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled)} onCancel={() => void cancelJob()} onReturnToBase={returnToBaseJob} /></>;
+    return <><NoticeHost message={notice} onClose={() => setNotice("")} /><CreativeWorkspace project={activeProject!} mode={activeProject!.mode} job={activeJob} workingJob={workingJob} skill={skills.find((skill) => skill.id === activeProject!.skill_id) ?? null} templates={readyTemplates} artifacts={artifacts} events={events} materials={materialsByProject[activeProject!.id] ?? []} materialUploading={materialUploading} onUploadMaterials={(files) => void uploadMaterialFiles(activeProject!.id, files)} onDeleteMaterial={(materialId) => void deleteMaterial(activeProject!.id, materialId)} initialTemplateId={selectedTemplateId} initialDraftText={pendingInferDraft?.projectId === activeProject!.id ? pendingInferDraft.draft : null} onDraftInferenceConsumed={() => setPendingInferDraft(null)} baseJobId={refinementBaseJob?.id ?? null} onBack={() => startDraft()} onGenerate={(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled) => startGeneration(prompt, templateId, baseJobId, targetSlideNumber, conversationMessage, clientMessageId, resumeFromCancelled)} onCancel={() => void cancelJob()} onReturnToBase={returnToBaseJob} /></>;
   }
 
   const replicaPageBody = nav === "templates"
