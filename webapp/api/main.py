@@ -3391,10 +3391,13 @@ async def download_artifact(
             ),
             media_type=artifact.content_type,
         )
+    # Artifacts are mutable (manual editor saves overwrite them), so previews
+    # must always revalidate instead of serving browser-heuristic caches.
     return FileResponse(
         artifact_path,
         media_type=artifact.content_type,
         filename=Path(artifact.relative_path).name,
+        headers={"Cache-Control": "no-cache"},
     )
 
 
