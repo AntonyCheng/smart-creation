@@ -44,6 +44,7 @@ from .celery_app import celery_app
 
 logger = get_task_logger(__name__)
 settings = get_settings()
+SKILL_ROOT = Path("/app/skills/ppt-master")
 _ENV_NAME_RE = re.compile(r"^[A-Z][A-Z0-9_]*$")
 _engine = create_engine(settings.sync_database_url, pool_pre_ping=True)
 SessionLocal = sessionmaker(_engine, expire_on_commit=False)
@@ -727,6 +728,78 @@ def _record_editor_event(job_id: UUID, text: str) -> None:
     with SessionLocal() as db:
         db.add(JobEvent(job_id=job_id, event_type="editor_export", payload={"status": "succeeded", "text": text}))
         db.commit()
+
+
+@celery_app.task(name="runner.sync_pptx_editor_revision")
+def sync_pptx_editor_revision(project_id_text: str, job_id_text: str) -> None:
+    """Re-import a manually edited PPTX into the job's SVG authoring source.
+
+    Without this loop the next AI refinement would regenerate from the
+    pre-edit SVG pages and silently drop the user's manual edits. The
+    roundtrip import rewrites svg_output page-by-page (in slide order) so the
+    existing preview/editor artifact records stay valid.
+    """
+
+    project_id = UUID(project_id_text)
+    job_id = UUID(job_id_text)
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        project = db.get(Project, project_id)
+    if not job or not project:
+        return
+    try:
+        job_workspace = _job_workspace_path(project, job)
+        authoring = next(
+            (entry for entry in job_workspace.iterdir() if (entry / "svg_output").is_dir()),
+            None,
+        )
+        if authoring is None:
+            _record_editor_event(job_id, "未找到演示文稿编辑源，跳过回写")
+            return
+        pptx_files = sorted(
+            (path for path in (authoring / "exports").rglob("*.pptx") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+        )
+        if not pptx_files:
+            _record_editor_event(job_id, "未找到手动保存的 PPTX，跳过回写")
+            return
+        saved_pptx = pptx_files[-1]
+        staging = Path("/tmp/pptx-editor-roundtrip")
+        shutil.rmtree(staging, ignore_errors=True)
+        staging.mkdir(parents=True)
+        convert = subprocess.run(
+            [
+                sys.executable, str(SKILL_ROOT / "scripts" / "pptx_to_svg.py"),
+                str(saved_pptx), "--inheritance-mode", "both", "--roundtrip",
+                "-o", str(staging),
+            ],
+            cwd="/app", capture_output=True, text=True, timeout=600,
+        )
+        flat = staging / "authoring-svg-flat"
+        if convert.returncode != 0 or not flat.is_dir():
+            _record_editor_event(job_id, f"PPTX 回写转换未完成：{(convert.stderr or convert.stdout)[-200:]}")
+            return
+        svg_output = authoring / "svg_output"
+        existing = sorted(svg_output.glob("*.svg"))
+        imported = sorted(flat.glob("*.svg"))
+        for index, page in enumerate(imported):
+            if index < len(existing):
+                shutil.copyfile(page, existing[index])
+            else:
+                shutil.copyfile(page, svg_output / f"{index + 1:02d}_slide.svg")
+        images_src = staging / "images"
+        if images_src.is_dir():
+            images_dst = authoring / "images"
+            images_dst.mkdir(parents=True, exist_ok=True)
+            for image in images_src.iterdir():
+                if image.is_file():
+                    shutil.copyfile(image, images_dst / image.name)
+        note = ""
+        if len(imported) != len(existing):
+            note = f"（页数由 {len(existing)} 页变为 {len(imported)} 页，超出部分预览暂未同步）"
+        _record_editor_event(job_id, f"手动编辑已回写演示文稿源{note}")
+    except Exception:  # noqa: BLE001
+        logger.exception("PPTX editor resync failed for job %s", job_id)
 
 
 @celery_app.task(name="runner.import_template")

@@ -3821,7 +3821,8 @@ async def editor_callback(token: str, request: Request) -> dict:
         message = "OnlyOffice 手动编辑已保存，正在同步创作源与预览。"
         celery_app.send_task("runner.sync_docx_editor_previews", args=[str(project.id), str(job.id)])
     else:
-        message = "OnlyOffice 定稿已保存。"
+        message = "OnlyOffice 定稿已保存，正在回写演示文稿编辑源。"
+        celery_app.send_task("runner.sync_pptx_editor_revision", args=[str(project.id), str(job.id)])
     async with SessionLocal() as db:
         db.add(JobEvent(job_id=job.id, event_type="editor_export", payload={"status": "succeeded", "text": message}))
         await db.commit()

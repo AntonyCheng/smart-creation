@@ -41,7 +41,8 @@ RUN opencode --version
 COPY webapp/requirements.txt /tmp/webapp-requirements.txt
 COPY docker/worker-requirements.txt /tmp/worker-requirements.txt
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/webapp-requirements.txt \
-    && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/worker-requirements.txt
+    && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/worker-requirements.txt \
+    && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" "python-pptx>=0.6.21" "XlsxWriter>=3.0.0" "skia-pathops>=0.9.2" "uharfbuzz>=0.50.0"
 
 # Agent-facing content lives at the same /app paths the skills expect.
 COPY AGENTS.md /app/AGENTS.md
