@@ -5,7 +5,7 @@ export type Project = { id: string; title: string; skill_id: string; mode: strin
 export type SkillStage = { id: string; label: string; description: string };
 export type SkillOutlineField = { name: string; label: string; required: boolean; max_length: number | null; default: string };
 export type SkillModeField = { name: string; label: string; type: string; required: boolean; max_length: number | null; default: string; placeholder: string; options: string[]; wide: boolean };
-export type SkillMode = { id: string; label: string; description: string; stages: SkillStage[]; fields: SkillModeField[] };
+export type SkillMode = { id: string; label: string; description: string; composer_placeholder?: string; stages: SkillStage[]; fields: SkillModeField[] };
 export type SkillRefinement = { scope: "page" | "document"; assistant_name: string; scope_label: string; context_hint: string; empty_hint: string };
 export type SkillFrontend = {
   hero_title: string;

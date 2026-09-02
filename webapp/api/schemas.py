@@ -434,6 +434,7 @@ class SkillModeOut(BaseModel):
     id: str
     label: str
     description: str = ""
+    composer_placeholder: str = ""
     stages: list[SkillStageOut] = Field(default_factory=list)
     fields: list[SkillModeFieldOut] = Field(default_factory=list)
 
