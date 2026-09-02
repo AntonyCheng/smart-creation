@@ -38,6 +38,11 @@ class Settings(BaseSettings):
         default="http://pptmaster-api:8000",
         validation_alias="PPTMASTER_EDITOR_INTERNAL_BASE",
     )
+    # Port on which the browser reaches Document Server (compose maps it).
+    editor_public_port: int = Field(
+        default=8081,
+        validation_alias="PPTMASTER_EDITOR_PUBLIC_PORT",
+    )
     session_cookie_name: str = "pm_session"
     session_ttl_hours: int = Field(default=168, ge=1, le=24 * 31)
     invite_ttl_hours: int = Field(default=168, ge=1, le=24 * 31)

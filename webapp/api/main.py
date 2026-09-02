@@ -3559,6 +3559,7 @@ def _editor_read_token(token: str) -> tuple[UUID, str, UUID]:
 
 @app.get("/api/v1/projects/{project_id}/doc-editor-config")
 async def doc_editor_config(
+    request: Request,
     project_id: UUID,
     kind: str = "docx",
     project: Project = Depends(get_owned_project),
@@ -3599,7 +3600,10 @@ async def doc_editor_config(
         "title": Path(artifact.relative_path).name,
         "documentUrl": f"{internal_base}/api/v1/editor/file?token={token}",
         "callbackUrl": f"{internal_base}/api/v1/editor/callback?token={token}",
-        "apiScript": "/onlyoffice/web-apps/apps/api/documents/api.js",
+        "apiScript": (
+            f"{request.url.scheme}://{request.url.hostname}:{get_settings().editor_public_port}"
+            "/web-apps/apps/api/documents/api.js"
+        ),
         "jobId": str(job.id),
     }
 

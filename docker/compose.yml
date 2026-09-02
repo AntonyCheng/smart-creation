@@ -132,6 +132,10 @@ services:
     # docker.io is unreachable from this host; DaoCloud mirror carries the same image.
     image: docker.m.daocloud.io/onlyoffice/documentserver:latest
     container_name: pptmaster-onlyoffice
+    ports:
+      # DS must be rooted at "/" for its internal redirects and websockets;
+      # subpath proxying breaks both. The browser reaches it on this port.
+      - "${PPTMASTER_ONLYOFFICE_PORT:-8081}:80"
     environment:
       # Internal deployment behind Caddy; tokens for callbacks are enforced by
       # the API instead (HMAC-signed editor URLs). Revisit JWT before exposing.
