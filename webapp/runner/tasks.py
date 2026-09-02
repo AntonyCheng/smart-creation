@@ -668,6 +668,67 @@ def execute_job(self, job_id_text: str) -> None:
         raise
 
 
+@celery_app.task(name="runner.sync_docx_editor_previews")
+def sync_docx_editor_previews(project_id_text: str, job_id_text: str) -> None:
+    """Re-render gongwen previews after a manual OnlyOffice edit is saved.
+
+    The workspace preview PNGs only regenerate during AI jobs, so without this
+    task the project page kept showing the pre-edit document. Renders with the
+    same LibreOffice + GB/T font pipeline the original job used.
+    """
+
+    project_id = UUID(project_id_text)
+    job_id = UUID(job_id_text)
+    with SessionLocal() as db:
+        job = db.get(Job, job_id)
+        project = db.get(Project, project_id)
+    if not job or not project:
+        return
+    try:
+        job_workspace = _job_workspace_path(project, job)
+        seed_dir = skill_manifest_for(job.skill_id).get("workspace", {}).get("continue_seed_dir") or "gongwen-project"
+        authoring = job_workspace / seed_dir
+        docx_files = sorted(
+            (path for path in (authoring / "exports").rglob("*.docx") if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+        )
+        if not docx_files:
+            return
+        docx = docx_files[-1]
+        environment = dict(os.environ)
+        runtime_config = authoring / "gongwen-runtime.json"
+        try:
+            fontconfig_file = str(json.loads(runtime_config.read_text(encoding="utf-8")).get("fontconfig_file") or "")
+        except (OSError, json.JSONDecodeError):
+            fontconfig_file = ""
+        if fontconfig_file and Path(fontconfig_file).is_file():
+            environment["FONTCONFIG_FILE"] = fontconfig_file
+        exports = authoring / "exports"
+        convert = subprocess.run(
+            ["soffice", "--headless", "--norestore", "--convert-to", "pdf", "--outdir", str(docx.parent), str(docx)],
+            env=environment, cwd=str(authoring), capture_output=True, text=True, timeout=600,
+        )
+        pdf = docx.parent / f"{docx.stem}.pdf"
+        if convert.returncode != 0 or not pdf.is_file():
+            _record_editor_event(job_id, "预览渲染未完成，文档本体已保存")
+            return
+        preview_root = authoring / "preview"
+        preview_root.mkdir(parents=True, exist_ok=True)
+        subprocess.run(
+            ["pdftoppm", "-png", "-r", "110", str(pdf), str(preview_root / "page")],
+            env=environment, cwd=str(authoring), capture_output=True, text=True, timeout=600,
+        )
+        _record_editor_event(job_id, "手动编辑已保存，预览已同步")
+    except Exception:  # noqa: BLE001
+        logger.exception("Preview resync failed for job %s", job_id)
+
+
+def _record_editor_event(job_id: UUID, text: str) -> None:
+    with SessionLocal() as db:
+        db.add(JobEvent(job_id=job_id, event_type="editor_export", payload={"status": "succeeded", "text": text}))
+        db.commit()
+
+
 @celery_app.task(name="runner.import_template")
 def import_template(template_id_text: str) -> None:
     """Parse an uploaded PPTX into a deterministic Deck template workspace."""

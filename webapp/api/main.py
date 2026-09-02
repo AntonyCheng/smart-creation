@@ -3811,9 +3811,12 @@ async def editor_callback(token: str, request: Request) -> dict:
         temp_path = Path(handle.name)
     temp_path.replace(artifact_path)
 
+    from runner.celery_app import celery_app
+
     if kind == "docx":
         await asyncio.to_thread(_sync_gongwen_input_json, artifact_path)
-        message = "OnlyOffice 手动编辑已保存，并已同步回创作源。"
+        message = "OnlyOffice 手动编辑已保存，正在同步创作源与预览。"
+        celery_app.send_task("runner.sync_docx_editor_previews", args=[str(project.id), str(job.id)])
     else:
         message = "OnlyOffice 定稿已保存。"
     async with SessionLocal() as db:
