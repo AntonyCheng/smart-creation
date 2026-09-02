@@ -246,7 +246,17 @@ export function CreativeWorkspace(props: Props) {
   const currentJob = props.workingJob || props.job;
   const pageRefinementConversation = Boolean(currentJob?.target_slide_number);
   const activeMode = useMemo(() => activeModeFor(props.skill, props.mode), [props.skill, props.mode]);
-  const modeFields = activeMode?.fields ?? [];
+  // Skills without modes (ppt-master) hit the `?? []` fallback; without
+  // memoizing, that literal is a new array identity on every render, which
+  // spuriously re-triggers the mount effect below (it depends on
+  // modeFields) on every state update this component makes — including the
+  // ones the in-flight requirements-inference request itself causes. Each
+  // spurious re-run marks the previous run's in-flight promise "ignored"
+  // before it resolves, so a successful inference response gets silently
+  // dropped and the skeleton spins forever even though the server-side
+  // write already succeeded (only a refresh, which refetches state fresh,
+  // reveals it).
+  const modeFields = useMemo(() => activeMode?.fields ?? [], [activeMode]);
   const stages = useMemo(() => stagesForSkill(props.skill, props.mode), [props.skill, props.mode]);
   const primaryKind = props.skill?.primary_artifact_kind || "pptx";
   const outlineFields = props.skill?.frontend.outline.fields ?? [];
