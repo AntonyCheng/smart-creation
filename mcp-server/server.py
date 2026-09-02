@@ -96,31 +96,6 @@ def _doc_generation_prompt(values: dict[str, Any], request: str) -> str:
     return "\n".join(lines)
 
 
-def _doc_typeset_prompt(values: dict[str, Any], content: str) -> str:
-    """Verbatim-typesetting contract for the gongwen typeset mode."""
-
-    lines = [
-        "请按 GB/T 9704—2012 党政机关公文格式将下面的公文内容排版生成 DOCX 文件。",
-        "忠实性要求：正文文字必须逐字保留，不得改写、增删、润色或纠错；"
-        "只允许划分段落结构与层级、设置版式要素。"
-        "内容中没有提供的版式事实一律使用XX占位，不得编造。",
-        f"文种：{values['doc_type']}",
-    ]
-    if values.get("issuer"):
-        lines.append(f"发文机关标志（红头）：{values['issuer']}")
-    if values.get("recipient"):
-        lines.append(f"主送机关：{values['recipient']}")
-    if values.get("objective"):
-        lines.append(f"补充要求：{values['objective']}")
-    lines.extend([
-        "",
-        "-----公文正文开始（以下内容必须逐字排版，不得改写）-----",
-        content,
-        "-----公文正文结束-----",
-        "",
-        "完成后按 skill 流程完成结构检查与渲染检查，并输出对话审核单。",
-    ])
-    return "\n".join(lines)
 
 
 def _job_by_id(jobs: list[dict[str, Any]], job_id: str) -> dict[str, Any] | None:
@@ -134,13 +109,19 @@ async def _submit_task(
     conversation_id: str | None,
     submitted_message: str,
     mode: str | None = None,
+    stage: str = "requirements",
 ) -> dict[str, Any]:
-    """Shared submission path: create project, persist requirements, queue job."""
+    """Shared submission path: create project, persist requirements, queue job.
+
+    stage must match a stage the target skill/mode actually declares (gongwen
+    typeset has no "requirements" stage at all — it starts at "content") or
+    the platform rejects the save with 422 before a job is ever queued.
+    """
 
     try:
         project = await client.create_project(str(requirements["topic"]), skill_id=skill_id, mode=mode)
         project_id = str(project["id"])
-        await client.save_requirements(project_id, requirements)
+        await client.save_requirements(project_id, requirements, stage=stage)
         job = await client.create_job(project_id, prompt)
     except (PlatformApiError, KeyError) as error:
         return {"status": "submission_failed", "error": str(error), "can_retry": True}
@@ -233,7 +214,12 @@ async def create_doc_task(
     if not original and not values["topic"]:
         return {"status": "needs_clarification", "missing_fields": ["topic"], "questions": _doc_questions(["topic"])}
     if doc_mode == "typeset":
-        body = _clean(content, 16_000)
+        # Not capped short: the platform is the source of truth for a
+        # verbatim-typesetting document's real length ceiling (its combined
+        # job prompt tops out at 20,000 characters). Truncating here would
+        # silently drop the tail of a "must reproduce exactly" document
+        # instead of surfacing a clear, actionable error.
+        body = _clean(content, 100_000)
         if not body:
             return {
                 "status": "needs_clarification",
@@ -251,13 +237,20 @@ async def create_doc_task(
                 "conversation_id": conversation_id,
                 "message": "请补充这些信息后再次调用 create_doc_task。",
             }
+        # The platform reconstructs the authoritative typeset job prompt
+        # itself from requirements.content (see gongwen typeset handling in
+        # create_job): it treats the submitted prompt as a short "用户补充"
+        # note, not the document body. content must live in requirements or
+        # the platform sees an empty body regardless of what prompt is sent.
+        values["content"] = body
         return await _submit_task(
             "gongwen",
             values,
-            _doc_typeset_prompt(values, body),
+            original,
             conversation_id,
             "公文排版任务已异步提交，正文将逐字排版，请使用 get_task_status 查询。",
             mode=doc_mode,
+            stage="content",
         )
     missing = [field for field in DOC_REQUIRED_FIELDS if not values[field]]
     if missing:

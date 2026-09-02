@@ -94,11 +94,13 @@ class PlatformClient:
             json={"title": title, "skill_id": skill_id, "mode": mode, "prompt_snippet_id": None},
         )
 
-    async def save_requirements(self, project_id: str, requirements: dict[str, Any]) -> dict[str, Any]:
+    async def save_requirements(
+        self, project_id: str, requirements: dict[str, Any], stage: str = "requirements"
+    ) -> dict[str, Any]:
         return await self._request(
             "PUT",
             f"/api/v1/projects/{project_id}/creative-state",
-            json={"stage": "requirements", "requirements": requirements, "notes_enabled": bool(requirements.get("notes_enabled", True))},
+            json={"stage": stage, "requirements": requirements, "notes_enabled": bool(requirements.get("notes_enabled", True))},
         )
 
     async def create_job(self, project_id: str, prompt: str, base_job_id: str | None = None) -> dict[str, Any]:
