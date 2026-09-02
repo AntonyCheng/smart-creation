@@ -287,8 +287,15 @@ def build_agent_prompt(ctx: SkillContext, template_instruction: str = "") -> str
             "The workspace contains the last successful revision. Revise that existing document "
             "in place per the requested changes and preserve unaffected content."
         )
+        reply_contract = (
+            "End this run with your user-facing reply as the final message. Begin that message\n"
+            "with the marker line 【回复用户】, followed by 2-4 sentences of Chinese stating exactly\n"
+            "what you changed in the document (or why nothing needed to change). The marked text\n"
+            "is delivered verbatim in the user's chat.\n"
+        )
     else:
         workspace_instruction = "The Worker has already initialized the empty project workspace."
+        reply_contract = ""
     return f"""You are executing one autonomous official-document drafting job.
 
 Read and follow /app/{str((ctx.manifest or {}).get("agent", {}).get("repo_conventions_doc") or "AGENTS.md")} and the Skill entry /app/{entry_doc}.
@@ -304,6 +311,7 @@ This platform collects finished files automatically: do not call send_channel_fi
 invent download links, and do not attempt any file delivery. Your final text (the review
 sheet) is delivered to the user as-is, so write that final text in Chinese and summarize
 concretely what changed, or explain plainly why nothing needed to change.
+{reply_contract}
 When revising an existing document, map the requester's wording onto the document regions
 precisely: the red masthead (发文机关标志/红头, the large red line at the very top), the
 document number (发文字号 below the masthead), the title (标题 below the masthead rule), the

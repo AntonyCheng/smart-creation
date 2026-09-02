@@ -279,8 +279,15 @@ def build_agent_prompt(ctx: SkillContext, template_instruction: str = "") -> str
             "The workspace contains the last successful revision. Modify that existing PPT Master "
             "project in place and preserve all unaffected slides."
         )
+        reply_contract = (
+            "End this run with your user-facing reply as the final message. Begin that message\n"
+            "with the marker line 【回复用户】, followed by 2-4 sentences of Chinese stating exactly\n"
+            "what you changed on the target slide (or why nothing needed to change). The marked\n"
+            "text is delivered verbatim in the user's chat.\n"
+        )
     else:
         workspace_instruction = "The Worker has already initialized the empty project workspace."
+        reply_contract = ""
     return f"""You are executing one autonomous PPT Master generation job.
 
 Read and follow /app/{conventions_doc} and the Skill entry /app/{entry_doc}. The web request is
@@ -289,7 +296,7 @@ interactive confirmation gate. The only project workspace is {project_workspace}
 It is the immutable project root for this job. Do not run project_manager.py init, and do
 not move, rename, copy, or create another project directory. Author every project file
 directly beneath this exact path.
-{template_instruction}
+{template_instruction}{reply_contract}
 For continuation edits, modify the existing SVG authoring files directly and preserve all
 unaffected slides. If a target slide is provided, only that slide's SVG may change; do not
 modify any other slide SVG, even if a broader redesign seems helpful. Do not run sudo, inspect /proc, inspect host permissions, or probe the

@@ -406,9 +406,12 @@ def _record_refinement_result(db, job: Job, reply: str = "") -> None:
             return
         slide_number = 0
     if job.status is JobStatus.SUCCEEDED:
-        # The agent stream holds verbose step narration (often English), so the
-        # chat always receives the predictable canned confirmation instead.
-        if slide_number == 0:
+        agent_reply = (reply or "").strip()
+        # Refinement prompts require a marked Chinese reply; only that marked
+        # answer is shown, so stream narration never leaks into the chat.
+        if agent_reply:
+            content = agent_reply
+        elif slide_number == 0:
             content = "已按你的要求完成修改，文档与预览均已更新。如需继续调整，请直接告诉我。"
         else:
             content = "当前页面已修改完成，结果已应用到当前 PPT。你还可以继续告诉我需要调整的地方。"
@@ -430,7 +433,7 @@ def _record_refinement_result(db, job: Job, reply: str = "") -> None:
     )
 
 
-def _finish_job(job_id: UUID, succeeded: bool, error: str | None = None) -> None:
+def _finish_job(job_id: UUID, succeeded: bool, error: str | None = None, reply: str = "") -> None:
     """Persist terminal state and discover the job's exported artifacts."""
 
     with SessionLocal() as db:
@@ -444,7 +447,7 @@ def _finish_job(job_id: UUID, succeeded: bool, error: str | None = None) -> None
         job.error = error
         job.finished_at = datetime.now(UTC)
         db.add(JobEvent(job_id=job.id, event_type="status", payload={"status": job.status.value}))
-        _record_refinement_result(db, job)
+        _record_refinement_result(db, job, reply=reply)
         project_workspace = _project_workspace_path(project)
         job_workspace = _job_workspace_path(project, job)
         _discover_job_artifacts(db, job, project, project_workspace, job_workspace)
@@ -577,6 +580,7 @@ def execute_job(self, job_id_text: str) -> None:
             logger.exception("Cancelled-job user cleanup failed for owner %s", project.owner_id)
         return
     worker_error: str | None = None
+    reply_text = ""
     process: subprocess.Popen | None = None
     stopped, cancelled = threading.Event(), threading.Event()
     try:
@@ -617,6 +621,12 @@ def execute_job(self, job_id_text: str) -> None:
                 event = {"type": "log", "text": line[:1000]}
             if event.get("type") == "error":
                 worker_error = str(event.get("message") or "任务执行失败")
+            elif event.get("type") == "agent":
+                # Refinement prompts end with a marked user-facing reply; keep
+                # the latest marked answer as the chat confirmation.
+                agent_text = str(event.get("text") or "")
+                if "【回复用户】" in agent_text:
+                    reply_text = agent_text.split("【回复用户】", 1)[1].strip()[:2000]
             _record_event(job.id, event)
 
         process = subprocess.Popen(
@@ -648,7 +658,7 @@ def execute_job(self, job_id_text: str) -> None:
             return
         if return_code != 0:
             raise RuntimeError(worker_error or f"Worker exited with code {return_code}")
-        _finish_job(job.id, succeeded=True)
+        _finish_job(job.id, succeeded=True, reply=reply_text)
     except Exception as exc:  # noqa: BLE001
         logger.exception("Job %s failed", job.id)
         if process is not None and process.poll() is None:
