@@ -14,7 +14,7 @@ type EditorConfig = {
 
 type DocsApiEditor = { destroyEditor: () => void };
 
-type DocsApi = { DocEditor: new (placeholder: string | HTMLElement, config: Record<string, unknown>) => DocsApiEditor };
+type DocsApi = { DocEditor: new (placeholderId: string, config: Record<string, unknown>) => DocsApiEditor };
 
 declare global {
   interface Window {
@@ -57,7 +57,8 @@ export function DocEditorPage({ projectId, docKind }: { projectId: string; docKi
         const config = await response.json() as EditorConfig;
         await loadScript(config.apiScript);
         if (cancelled || !window.DocsAPI || !placeholderRef.current) return;
-        editor = new window.DocsAPI.DocEditor(placeholderRef.current, {
+        // DocsAPI resolves the placeholder with getElementById: it needs the ID.
+        editor = new window.DocsAPI.DocEditor("onlyoffice-placeholder", {
           document: {
             fileType: config.fileType,
             key: config.docKey,
