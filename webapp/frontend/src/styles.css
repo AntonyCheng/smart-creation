@@ -495,6 +495,8 @@ input:focus, textarea:focus, select:focus { border-color: #0f766e; outline: 2px 
 .kppt-composer textarea::placeholder { color: #9ba1aa; }
 .kppt-composer-actions { display: flex; align-items: center; justify-content: space-between; padding: 0 3px; }
 .kppt-composer-actions > div { display: flex; align-items: center; gap: 6px; }
+.kppt-mode-switch { flex: none; }
+.kppt-mode-switch button { height: 26px; }
 .kppt-soft-button, .kppt-tool-button { display: inline-flex; align-items: center; justify-content: center; gap: 7px; height: 32px; padding: 0 9px; border: 1px solid #e4e6ea; border-radius: 8px; background: #fff; color: #4d535b; font-size: 11px; font-weight: 700; white-space: nowrap; }
 .kppt-soft-button { position: relative; cursor: pointer; }
 .kppt-soft-button input { position: absolute; inset: 0; width: 100%; height: 100%; opacity: 0; cursor: pointer; }
