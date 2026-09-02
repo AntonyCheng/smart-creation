@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import json
 import logging
@@ -15,7 +16,7 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import UUID
 
@@ -243,6 +244,76 @@ def _editor_artifact_path(project: Project, artifact: Artifact) -> Path:
     if project_root not in path.parents or not path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "产物文件不存在或已被清理")
     return path
+
+
+_SVG_HREF_RE = re.compile(r"""((?:xlink:)?href=")([^"]+)(")""")
+_SVG_HREF_DATA_URI_RE = re.compile(r"""((?:xlink:)?href=")(data:[^"]+)(")""")
+_SVG_IMAGE_MIME_TYPES = {
+    ".png": "image/png",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".gif": "image/gif",
+    ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".svg": "image/svg+xml",
+}
+
+
+def _inline_svg_relative_images(content: str, base_dir: Path) -> str:
+    """Rewrite one SVG's relative image refs into data URIs for browser display.
+
+    Browsers refuse external resources for SVGs shown through <img> and resolve
+    DOM-embedded refs against the page URL, so raster backgrounds vanish on both
+    preview paths even though the workspace files stay correct. Only refs that
+    stay inside the SVG's own project directory are inlined.
+    """
+
+    project_dir = base_dir.parent
+
+    def replace(match: re.Match[str]) -> str:
+        reference = match.group(2)
+        if reference.startswith(("data:", "#", "http://", "https://", "file:")):
+            return match.group(0)
+        parsed = urlsplit(unquote(reference))
+        if parsed.scheme or parsed.path.startswith("/"):
+            return match.group(0)
+        target = (base_dir / parsed.path).resolve()
+        if project_dir not in target.parents or not target.is_file():
+            return match.group(0)
+        mime = _SVG_IMAGE_MIME_TYPES.get(target.suffix.lower(), "application/octet-stream")
+        payload = base64.b64encode(target.read_bytes()).decode("ascii")
+        return f"{match.group(1)}data:{mime};base64,{payload}{match.group(3)}"
+
+    return _SVG_HREF_RE.sub(replace, content)
+
+
+def _restore_svg_relative_images(content: str, base_dir: Path) -> str:
+    """Undo serve-time inlining so saved editor SVGs keep portable relative refs.
+
+    The editor round-trips the served markup back on save; mapping the base64
+    payloads back through the sibling images directory keeps stored files small
+    and exportable.
+    """
+
+    known: dict[str, str] = {}
+    images_dir = base_dir.parent / "images"
+    if images_dir.is_dir():
+        for image in images_dir.rglob("*"):
+            if image.is_file():
+                relative = (Path("../images") / image.relative_to(images_dir)).as_posix()
+                known[base64.b64encode(image.read_bytes()).decode("ascii")] = relative
+    if not known:
+        return content
+
+    def replace(match: re.Match[str]) -> str:
+        reference = match.group(2)
+        _, _, payload = reference.partition("base64,")
+        target = known.get(payload)
+        if target is None:
+            return match.group(0)
+        return f"{match.group(1)}{target}{match.group(3)}"
+
+    return _SVG_HREF_DATA_URI_RE.sub(replace, content)
 
 
 def _validate_editor_svg(content: str) -> None:
@@ -3293,6 +3364,13 @@ async def download_artifact(
     artifact_path = (project_root / artifact.relative_path).resolve()
     if project_root not in artifact_path.parents or not artifact_path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "产物文件不存在或已被清理")
+    if artifact_path.suffix.lower() == ".svg":
+        return Response(
+            _inline_svg_relative_images(
+                artifact_path.read_text(encoding="utf-8"), artifact_path.parent
+            ),
+            media_type=artifact.content_type,
+        )
     return FileResponse(
         artifact_path,
         media_type=artifact.content_type,
@@ -3364,7 +3442,10 @@ async def get_editor_slide(
     """Serve one editable SVG inline after task ownership verification."""
 
     artifact = await _get_editor_slide(project, job_id, artifact_id, db)
-    content = _editor_artifact_path(project, artifact).read_text(encoding="utf-8")
+    artifact_path = _editor_artifact_path(project, artifact)
+    content = _inline_svg_relative_images(
+        artifact_path.read_text(encoding="utf-8"), artifact_path.parent
+    )
     return Response(content, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
@@ -3391,9 +3472,10 @@ async def save_editor_slide(
     if active:
         raise HTTPException(status.HTTP_409_CONFLICT, "当前对话仍有任务在执行，暂不能手动保存")
     artifact = await _get_editor_slide(project, job_id, artifact_id, db)
-    _validate_editor_svg(payload.content)
     artifact_path = _editor_artifact_path(project, artifact)
-    artifact_path.write_text(payload.content, encoding="utf-8")
+    content = _restore_svg_relative_images(payload.content, artifact_path.parent)
+    _validate_editor_svg(content)
+    artifact_path.write_text(content, encoding="utf-8")
     artifact.size_bytes = artifact_path.stat().st_size
     db.add(
         JobEvent(
