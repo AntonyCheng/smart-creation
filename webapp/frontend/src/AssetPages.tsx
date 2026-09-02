@@ -19,10 +19,40 @@ function artifactUrl(jobId: string, artifactId: string): string {
 }
 
 function templatePreviewFiles(template: Template): string[] {
+  // Server-rendered PNGs are pixel-faithful (SVG <img> previews cannot resolve
+  // ../images references); fall back to the raw SVG files for legacy imports.
+  const pngs = template.metadata.preview_files_png;
+  const pngFiles = Array.isArray(pngs) ? pngs.map(String).filter(Boolean) : [];
+  if (pngFiles.length > 0) return pngFiles;
   const value = template.metadata.preview_files;
   const files = Array.isArray(value) ? value.map(String).filter(Boolean) : [];
   const slideFiles = files.filter((file) => /(?:^|\/)\d{3}_.*\.svg$/i.test(file));
   return slideFiles.length > 0 ? slideFiles : files;
+}
+
+interface ImportLossSummary { label?: string; count?: number; sample?: string }
+interface ImportReport {
+  warning_count?: number;
+  losses?: Record<string, ImportLossSummary>;
+  normalizations?: Record<string, ImportLossSummary>;
+  slides_affected?: number[];
+  placeholders?: { total?: number; by_semantic_role?: Record<string, number> };
+}
+
+const placeholderRoleLabels: Record<string, string> = {
+  title: "标题", body: "正文", subtitle: "副标题", image: "图片", picture: "图片", chart: "图表",
+  table: "表格", header: "页眉", footer: "页脚", date: "日期", "slide-number": "页码",
+  media: "媒体", object: "对象", content: "内容", text: "文本", other: "其他", unknown: "其他",
+};
+
+function importReportSummary(template: Template): ImportReport | null {
+  const value = (template.metadata as Record<string, unknown>).import_report;
+  if (!value || typeof value !== "object") return null;
+  const report = value as ImportReport;
+  const lossCount = Object.values(report.losses || {}).reduce((total, entry) => total + (entry.count || 0), 0);
+  const hasPlaceholders = Boolean(report.placeholders?.total);
+  if (!lossCount && !hasPlaceholders) return null;
+  return report;
 }
 
 function templateFileUrl(templateId: string, filePath: string): string {
@@ -47,6 +77,10 @@ function TemplatePreviewModal(props: { template: Template; onClose: () => void; 
   const currentFile = files[index] || files[0] || "";
   const colors = templateMetadataList(props.template.metadata.colors).map((color) => color.startsWith("#") ? color : `#${color}`).filter((color) => /^#[0-9a-f]{6}$/i.test(color));
   const fonts = templateMetadataList(props.template.metadata.fonts);
+  const importReport = importReportSummary(props.template);
+  const lossEntries = Object.entries(importReport?.losses || {}).filter(([, entry]) => (entry.count || 0) > 0);
+  const normalizationEntries = Object.entries(importReport?.normalizations || {}).filter(([, entry]) => (entry.count || 0) > 0);
+  const placeholderRoles = Object.entries(importReport?.placeholders?.by_semantic_role || {}).filter(([, count]) => count > 0);
   const canUse = props.template.status === "ready" && props.template.is_active;
   function useTemplate(): void {
     if (!canUse) return;
@@ -62,7 +96,7 @@ function TemplatePreviewModal(props: { template: Template; onClose: () => void; 
       <div className="kppt-template-detail-body">
         <aside className="kppt-template-detail-thumbs"><strong>页面预览 <small>{files.length || props.template.page_count || 0} 页</small></strong>{files.length ? files.map((file, fileIndex) => <button className={index === fileIndex ? "is-active" : ""} type="button" key={file} onClick={() => setIndex(fileIndex)}><img src={templateFileUrl(props.template.id, file)} alt={`第 ${fileIndex + 1} 页`} /><span>{fileIndex + 1}</span></button>) : <p>{templateStatusText(props.template)}</p>}</aside>
         <main className="kppt-template-detail-canvas">{currentFile ? <img src={templateFileUrl(props.template.id, currentFile)} alt={`${props.template.name}第 ${index + 1} 页`} /> : <div><LayoutTemplate size={32} /><strong>{templateStatusText(props.template)}</strong></div>}</main>
-        <aside className="kppt-template-detail-summary"><section><span>解析状态</span><strong className={`kppt-template-detail-state kppt-template-detail-state-${props.template.status}`}>{props.template.status === "ready" ? (props.template.is_active ? "已启用" : "已停用") : props.template.status === "analyzing" ? "解析中" : "解析失败"}</strong></section><section><span>页面数量</span><strong>{props.template.page_count || files.length || 0} 页</strong></section><section><span>最近更新</span><strong>{formatDate(props.template.updated_at)}</strong></section>{colors.length > 0 && <section><span>主要配色</span><div className="kppt-template-color-list">{colors.map((color) => <i key={color} title={color} style={{ backgroundColor: color }} />)}</div></section>}{fonts.length > 0 && <section><span>字体</span><p>{fonts.join("、")}</p></section>}<section><span>源文件</span><p>{props.template.original_filename}</p></section></aside>
+        <aside className="kppt-template-detail-summary"><section><span>解析状态</span><strong className={`kppt-template-detail-state kppt-template-detail-state-${props.template.status}`}>{props.template.status === "ready" ? (props.template.is_active ? "已启用" : "已停用") : props.template.status === "analyzing" ? "解析中" : "解析失败"}</strong></section><section><span>页面数量</span><strong>{props.template.page_count || files.length || 0} 页</strong></section><section><span>最近更新</span><strong>{formatDate(props.template.updated_at)}</strong></section>{colors.length > 0 && <section><span>主要配色</span><div className="kppt-template-color-list">{colors.map((color) => <i key={color} title={color} style={{ backgroundColor: color }} />)}</div></section>}{fonts.length > 0 && <section><span>字体</span><p>{fonts.join("、")}</p></section>}{importReport && <section><span>导入保真度</span>{lossEntries.length > 0 ? <ul className="kppt-template-fidelity-list">{lossEntries.map(([code, entry]) => <li key={code} title={entry.sample || code}><em>{entry.label || code}</em>×{entry.count}</li>)}</ul> : <p>主要样式均已完整还原</p>}{placeholderRoles.length > 0 && <p>{placeholderRoles.map(([role, count]) => `${placeholderRoleLabels[role] || role} ×${count}`).join("、")}</p>}{normalizationEntries.length > 0 && <p className="kppt-template-fidelity-note">另有 {normalizationEntries.reduce((total, [, entry]) => total + (entry.count || 0), 0)} 处自动修正</p>}</section>}<section><span>源文件</span><p>{props.template.original_filename}</p></section></aside>
       </div>
       <footer className="kppt-template-detail-footer"><span>{files.length > 1 ? `第 ${index + 1} / ${files.length} 页` : files.length === 1 ? "共 1 页" : templateStatusText(props.template)}</span><div><button className="zc-icon" type="button" aria-label="上一页" title="上一页" disabled={index === 0 || files.length < 2} onClick={() => setIndex((current) => Math.max(0, current - 1))}><ChevronLeft size={17} /></button><button className="zc-icon" type="button" aria-label="下一页" title="下一页" disabled={index >= files.length - 1 || files.length < 2} onClick={() => setIndex((current) => Math.min(files.length - 1, current + 1))}><ChevronRight size={17} /></button><button className="zc-secondary" type="button" onClick={props.onClose}>关闭</button><PrimaryButton className="zc-primary" disabled={!canUse} onClick={useTemplate}><LayoutTemplate size={15} />使用此模板</PrimaryButton></div></footer>
     </section>

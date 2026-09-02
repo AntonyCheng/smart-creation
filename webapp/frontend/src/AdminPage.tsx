@@ -17,6 +17,10 @@ function formatDate(value: string): string {
 }
 
 function templatePreviewFiles(template: Template): string[] {
+  // Prefer server-rendered PNGs; fall back to raw SVGs for legacy imports.
+  const pngs = template.metadata.preview_files_png;
+  const pngFiles = Array.isArray(pngs) ? pngs.map(String).filter(Boolean) : [];
+  if (pngFiles.length > 0) return pngFiles;
   const value = template.metadata.preview_files;
   const files = Array.isArray(value) ? value.map(String).filter(Boolean) : [];
   const slideFiles = files.filter((file) => /(?:^|\/)\d{3}_.*\.svg$/i.test(file));

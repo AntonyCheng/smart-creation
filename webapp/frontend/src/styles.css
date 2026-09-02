@@ -989,6 +989,12 @@ input:focus, textarea:focus, select:focus { border-color: #0f766e; outline: 2px 
 .kppt-template-detail-footer .zc-primary, .kppt-template-detail-footer .zc-secondary { display: inline-flex; align-items: center; gap: 5px; min-height: 30px; padding: 0 10px; }
 .kppt-template-color-list { display: flex; flex-wrap: wrap; gap: 6px; }
 .kppt-template-color-list i { width: 22px; height: 22px; border: 1px solid rgb(24 27 31 / 12%); border-radius: 5px; }
+.kppt-template-fidelity-list { display: grid; gap: 3px; margin: 0; padding: 0; list-style: none; }
+.kppt-template-fidelity-list li { color: var(--zc-text-soft); font-size: 10px; line-height: 1.5; overflow-wrap: anywhere; }
+.kppt-template-fidelity-list em { color: var(--zc-text); font-style: normal; }
+.kppt-template-fidelity-note { color: var(--zc-muted) !important; }
+html[data-theme="dark"] .kppt-template-fidelity-list em { color: var(--zc-text); }
+html[data-theme="dark"] .kppt-template-fidelity-note { color: var(--zc-muted) !important; }
 .zc-prompt-summary { display: flex; align-items: center; gap: 11px; margin-top: 28px; padding: 13px 15px; border: 1px solid #f3d4d7; border-radius: 9px; background: #fffafb; }
 .zc-prompt-summary > span { display: inline-flex; align-items: center; justify-content: center; width: 38px; height: 38px; border-radius: 9px; background: var(--zc-brand-soft); color: var(--zc-brand); }
 .zc-prompt-summary > div { display: flex; flex: 1; flex-direction: column; }

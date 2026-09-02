@@ -33,6 +33,7 @@ from api.models import (
     ProjectMaterial,
     Provider,
     ProviderModel,
+    SystemSetting,
     Template,
     TemplateStatus,
     User,
@@ -521,6 +522,25 @@ def _job_opencode_config(job: Job) -> str | None:
     return None
 
 
+def _template_review_opencode_config() -> str | None:
+    """Build an ephemeral OpenCode config for the template review agent.
+
+    Reuses the platform default model so template review follows the same
+    administrator-managed catalog as generation jobs.
+    """
+
+    with SessionLocal() as db:
+        setting = db.get(SystemSetting, "default_model_id")
+        default_model = setting.value if setting else None
+        if not default_model:
+            return None
+        result = db.execute(select(Provider, ProviderModel).join(ProviderModel, ProviderModel.provider_id == Provider.id).where(Provider.is_active.is_(True), ProviderModel.is_active.is_(True), ProviderModel.is_verified.is_(True)))
+        for provider, model in result.all():
+            if f"{provider.slug}/{model.model_id}" == default_model:
+                return json.dumps(opencode_config(provider, model), ensure_ascii=False)
+    return None
+
+
 @celery_app.task(name="runner.execute_job", bind=True)
 def execute_job(self, job_id_text: str) -> None:
     """Run a generation job as a bounded subprocess of this runner."""
@@ -700,13 +720,17 @@ def import_template(template_id_text: str) -> None:
                 )
 
         output_lines: list[str] = []
+        import_env = {
+            "PPTMASTER_TEMPLATE_ID": str(template_id),
+            "PPTMASTER_WORKSPACE": str(template_workspace),
+            "HOME": "/home/pptmaster",
+        }
+        review_config = _template_review_opencode_config()
+        if review_config:
+            import_env["PPTMASTER_OPENCODE_CONFIG_JSON"] = review_config
         code, _ = _run_worker_module(
             "worker.template_import",
-            {
-                "PPTMASTER_TEMPLATE_ID": str(template_id),
-                "PPTMASTER_WORKSPACE": str(template_workspace),
-                "HOME": "/home/pptmaster",
-            },
+            import_env,
             lambda line: record_line(line, output_lines),
         )
         update_progress(stage="running", message="模板解析完成，正在校验结果")

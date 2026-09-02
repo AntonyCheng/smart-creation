@@ -10,5 +10,8 @@ celery_app.conf.update(
     task_default_queue="pptmaster-jobs",
     task_time_limit=settings.celery_task_time_limit,
     task_track_started=True,
+    # Template imports run agent-assisted work and would otherwise hold the
+    # single-concurrency generation queue for minutes at a time.
+    task_routes={"runner.import_template": {"queue": "pptmaster-template-imports"}},
 )
 celery_app.autodiscover_tasks(["runner"])

@@ -23,7 +23,7 @@ RUN sed -i "s|http://deb.debian.org/debian|${APT_MIRROR}|g" /etc/apt/sources.lis
     && apt-get install -y --no-install-recommends \
         bash build-essential ca-certificates curl fd-find ffmpeg findutils fontconfig \
         fonts-dejavu-core fonts-noto-cjk fonts-noto-color-emoji git jq libstdc++6 \
-        libreoffice-writer openssh-client pandoc pkg-config poppler-utils procps psmisc \
+        libreoffice-draw libreoffice-writer openssh-client pandoc pkg-config poppler-utils procps psmisc \
         ripgrep tini unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
     && python -m venv /opt/venv \
@@ -54,5 +54,7 @@ COPY webapp/worker ./worker
 COPY webapp/skills ./skills
 COPY webapp/migrations ./migrations
 COPY webapp/alembic.ini ./alembic.ini
+COPY docker/bin/start-runner.sh /usr/local/bin/start-runner
+RUN chmod +x /usr/local/bin/start-runner
 
-CMD ["celery", "-A", "runner.celery_app:celery_app", "worker", "--loglevel=INFO", "--concurrency=1"]
+CMD ["start-runner"]
