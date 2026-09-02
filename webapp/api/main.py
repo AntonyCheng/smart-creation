@@ -1277,6 +1277,19 @@ def _material_prompt_context(materials: list[ProjectMaterial]) -> str:
     return "\n".join(lines)
 
 
+def _has_extractable_material_text(materials: list[ProjectMaterial]) -> bool:
+    """Whether at least one material actually yielded reproducible text.
+
+    ProjectMaterial.status == "ready" only means the file was stored
+    successfully; an image or a material whose text extraction failed still
+    carries that status. Any code path that treats "a material was
+    attached" as "there is real text to work with" (typeset's content
+    source, or its field-recognition source) must check this instead.
+    """
+
+    return any(str((material.meta or {}).get("parse_status") or "") == "ready" for material in materials)
+
+
 def _material_planning_context(materials: list[ProjectMaterial]) -> str:
     """Build a materials summary for single-shot planning calls.
 
@@ -2931,7 +2944,7 @@ async def infer_project_creative_requirements(
     is_typeset = bool(mode_definition and mode_definition.get("id") == "typeset")
     if is_typeset:
         fields = list(mode_definition.get("fields") or [])
-        if materials:
+        if _has_extractable_material_text(materials):
             # An uploaded material is the real document source; the composer
             # text is at most a short instruction, not the body, so it must
             # not overwrite the content field with the wrong text. Field
@@ -3194,10 +3207,10 @@ async def create_job(
     ).scalars().all()
     if typeset_mode and base_job is None:
         has_content = bool(str((creative_state.requirements or {}).get("content") or "").strip())
-        if not has_content and not project_materials:
+        if not has_content and not _has_extractable_material_text(project_materials):
             raise HTTPException(
                 status.HTTP_422_UNPROCESSABLE_ENTITY,
-                "请先录入公文正文或上传内容文件，再生成排版公文。",
+                "请先录入公文正文，或上传至少一份能提取出文字的内容文件（图片等格式无法直接排版）。",
             )
         job_prompt = f"{job_prompt}\n\n本任务为公文排版：材料清单中的文档即排版正文来源，必须逐字排版其全部内容。"
     job_prompt = f"{job_prompt}{_material_prompt_context(project_materials)}"

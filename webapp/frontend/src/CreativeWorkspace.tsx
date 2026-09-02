@@ -504,8 +504,11 @@ export function CreativeWorkspace(props: Props) {
 
   async function confirmContent(): Promise<void> {
     const content = String(requirements.content || "").trim();
-    if (!content && !props.materials.length) {
-      setNotice("请粘贴公文正文，或上传内容文件后再继续。");
+    // A material merely being attached isn't enough: an image, or one whose
+    // text extraction failed, carries no reproducible text to typeset from.
+    const hasTextMaterial = props.materials.some((material) => String(material.metadata?.parse_status || "") === "ready");
+    if (!content && !hasTextMaterial) {
+      setNotice("请粘贴公文正文，或上传至少一份能提取出文字的内容文件（图片等格式无法直接排版）。");
       return;
     }
     const nextStage = stages.some((stage) => stage.id === "format") ? "format" : "generating";

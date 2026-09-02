@@ -254,7 +254,16 @@ def _seed_job_workspace(project: Project, job: Job, destination: Path) -> bool:
 
 
 def _copy_project_materials(project: Project, destination: Path) -> None:
-    """Copy immutable project source materials into the isolated worker mount."""
+    """Copy immutable project source materials into the isolated worker mount.
+
+    Stored filenames are random UUIDs (see ProjectMaterial.relative_path), so
+    a worker that later globs this directory and sorts by filename (e.g. the
+    gongwen typeset adapter's verbatim-content fallback, which concatenates
+    every extracted sidecar when no content was pasted) would join multi-part
+    uploads in an order unrelated to when the user added them. Prefixing each
+    copied file with its zero-padded upload order fixes that without any
+    worker-side change, since filename-sort now matches upload order.
+    """
 
     project_root = _project_workspace_path(project)
     materials_root = (project_root / "materials").resolve()
@@ -264,10 +273,23 @@ def _copy_project_materials(project: Project, destination: Path) -> None:
     if destination.resolve() not in target_root.parents:
         raise RuntimeError("材料复制目标越出任务工作区")
     target_root.mkdir(parents=True, exist_ok=True)
+    with SessionLocal() as db:
+        ordered_ids = [
+            str(material_id)
+            for (material_id,) in db.execute(
+                select(ProjectMaterial.id)
+                .where(ProjectMaterial.project_id == project.id)
+                .order_by(ProjectMaterial.created_at.asc())
+            ).all()
+        ]
+    order_index = {material_id: index for index, material_id in enumerate(ordered_ids)}
     for source in materials_root.iterdir():
         if source.is_symlink() or not source.is_file():
             continue
-        target = target_root / source.name
+        stem = source.name.split(".", 1)[0]
+        index = order_index.get(stem)
+        prefixed_name = f"{index:03d}_{source.name}" if index is not None else source.name
+        target = target_root / prefixed_name
         shutil.copy2(source, target)
 
 
