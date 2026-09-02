@@ -3585,7 +3585,7 @@ async def doc_editor_config(
     if not row:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "暂无可编辑的文件，请先生成一次")
     artifact, job = row
-    artifact_path = (settings.workspace_root / artifact.relative_path).resolve()
+    artifact_path = (_workspace_path(project) / artifact.relative_path).resolve()
     if not artifact_path.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "编辑目标文件不存在或已被清理")
     payload = artifact_path.read_bytes()
@@ -3808,7 +3808,9 @@ async def frontend() -> FileResponse:
     index = FRONTEND_DIST / "index.html"
     if not index.is_file():
         raise HTTPException(status.HTTP_404_NOT_FOUND, "前端构建产物不可用")
-    return FileResponse(index)
+    # The shell references hashed bundles that disappear on redeploy; browsers
+    # must revalidate it so a cached shell cannot 404 its own bundle.
+    return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/{frontend_path:path}", include_in_schema=False)
