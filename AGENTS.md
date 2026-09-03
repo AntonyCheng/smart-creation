@@ -52,7 +52,7 @@ PPT Master turns source material into natively editable DrawingML PPTX. Generate
 
 - **Repo-wide style rules** — when editing prompt files under [`skills/ppt-master/references/`](skills/ppt-master/references/), Python under [`skills/ppt-master/scripts/`](skills/ppt-master/scripts/), or any other code/prose in the repo, follow the matching style rule in [`docker/agent/docs/rules/`](docker/agent/docs/rules/) (baked into the runtime as `/app/docs/rules`).
 - **Prompt content layers** — follow [`docker/agent/docs/rules/prompt-layers.md`](docker/agent/docs/rules/prompt-layers.md): a prompt file holds craft (design judgment) and the minimal contract the model writes; enforced grammar, importer behavior, and restated procedure live in [`scripts/docs/`](skills/ppt-master/scripts/docs/), one owner per rule with pointers elsewhere.
-- **Prompt decision ownership** — follow [`docker/agent/docs/rules/prompt-style.md`](docker/agent/docs/rules/prompt-style.md) §4.1. Default Strategist prepares project-local resources and Executor realizes them; Quick's current agent decides and prepares before SVG authoring. This is not downstream acquisition. Every project icon is prepared material; `icons.inventory` indexes the default plan's curated bundled pool, not page usage or an execution whitelist. Sounds follow [`animations.md`](skills/ppt-master/references/animations.md) §2.2.
+- **Prompt decision ownership** — follow [`docker/agent/docs/rules/ownership.md`](docker/agent/docs/rules/ownership.md); every cross-file rule has one owner recorded in [`docker/agent/docs/rules/rule-owners.md`](docker/agent/docs/rules/rule-owners.md). Default Strategist prepares project-local resources and Executor realizes them; Quick's current agent decides and prepares before SVG authoring. This is not downstream acquisition. Every project icon is prepared material; `icons.inventory` indexes the default plan's curated bundled pool, not page usage or an execution whitelist. Sounds follow [`animations.md`](skills/ppt-master/references/animations.md) §2.2.
 - **Markdown language consistency** — follow [`docker/agent/docs/rules/language.md`](docker/agent/docs/rules/language.md): one language per file, mirroring the siblings in that directory; a non-English string may appear in an English file only as quoted content (user trigger text, sample values, rendered labels, proper nouns), never as the wording of a rule; never hard-code which language the model replies in. Chat replies are unaffected.
 
 ## Compatibility Boundary
@@ -75,7 +75,7 @@ python3 skills/ppt-master/scripts/confirm_ui/server.py <project_path> --daemon  
 python3 skills/ppt-master/scripts/analyze_images.py <project_path>/images
 python3 skills/ppt-master/scripts/image_gen.py --manifest <project_path>/images/image_prompts.json   # in-pipeline AI images, even for 1
 python3 skills/ppt-master/scripts/svg_editor/server.py <project_path> --live --daemon
-python3 skills/ppt-master/scripts/svg_quality_checker.py <project_path> --canonical-authoring
+python3 skills/ppt-master/scripts/svg_quality_checker.py <project_path> --canonical-authoring --stage final --json   # Quick adds --quick-generate; --json writes the report the exporter reads, stdout stays the summary
 python3 skills/ppt-master/scripts/pptx_to_svg.py <source.pptx> -o projects/<slug>_<YYYYMMDD> --inheritance-mode both --roundtrip   # Edit Native PPTX
 python3 skills/ppt-master/scripts/svg_to_pptx.py projects/<slug>_<YYYYMMDD> --roundtrip
 ```
