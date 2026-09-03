@@ -6,14 +6,27 @@
 
 | 上游路径 | 本仓库路径 | 方式 |
 | --- | --- | --- |
-| `skills/ppt-master/`（整目录） | `skills/ppt-master/` | 覆盖拷贝 |
-| `docs/rules/` | `docs/rules/` | 手动 diff 后择优合并 |
+| `skills/ppt-master/`（整目录） | `skills/ppt-master/` | 覆盖拷贝（robocopy /MIR） |
+| `docs/rules/` | `docker/agent/docs/rules/` | 手动 diff 后择优合并 |
+| `docs/audio-narration.md` | `docker/agent/docs/audio-narration.md` | 覆盖拷贝 |
+| `AGENTS.md` | `AGENTS.md` | 以上游为基线，重新叠加定制（见下） |
 
-其余上游文件（根 README、宣传页、examples 更新等）**不拷贝**。上游用户文档（FAQ、installation 等）如需要，手动挑拣进 `docs/`。
+规则文件放在 `docker/agent/docs/`（不是仓库根 `docs/`），因为 `docker/Dockerfile.runner` 只 `COPY docker/agent/docs /app/docs`，运行时为 `/app/docs/rules`。
 
-## 受保护文件（拷贝后必须恢复）
+其余上游文件（根 README、宣传页、examples 更新等）**不拷贝**。上游用户文档（FAQ、installation 等）如需要，手动挑拣进 `docker/agent/docs/`。
 
-- `skills/ppt-master/README.md` — 本仓库改写过（原上游 README 已被替换），被覆盖后从上游 `README.md` + `README_CN.md` 重新整理，或直接放弃恢复（平台仓库不需要 OSS README）。
+## AGENTS.md 定制点（每次同步必须重新叠加）
+
+以上游 `AGENTS.md` 为基线，重做这 4 处：
+
+1. 顶部 `## Skill routing` 段（ppt-master / gongwen 分发）
+2. 所有 `docs/rules/xxx` 链接改写为 `docker/agent/docs/rules/xxx`，并保留“baked into the runtime as `/app/docs/rules`”说明
+3. `Compatibility Boundary` 改为多 skill + web 平台措辞
+4. `Core Directories` 增加 `skills/gongwen/SKILL.md` 与 `webapp/docs/`，替换上游 `docs/` 用户文档条目
+
+## 关于 skills/ppt-master/README.md
+
+上游已把该 README 移到仓库根，skill 目录内不再有此文件；本仓库直接跟随删除，不恢复。
 
 平台侧 manifest 位于 `webapp/skills/ppt-master/skill.manifest.json`，不在 `skills/` 内，天然不受同步影响。
 
