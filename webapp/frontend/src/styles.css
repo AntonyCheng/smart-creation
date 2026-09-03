@@ -1017,6 +1017,13 @@ html[data-theme="dark"] .kppt-template-fidelity-note { color: var(--zc-muted) !i
 .zc-prompt-card footer button { display: inline-flex; align-items: center; justify-content: center; width: 27px; height: 27px; padding: 0; border: 0; border-radius: 5px; background: transparent; color: var(--zc-muted); }
 .zc-prompt-card footer button:hover { background: var(--zc-subtle); color: var(--zc-brand); }
 .zc-workbench { min-height: 100%; background: var(--zc-bg); }
+/* Manual editor shell (OnlyOffice host): token-driven so light/dark track the
+   app. The iframe keeps its own theme via customization.uiTheme. */
+.zc-doc-editor-shell { display: grid; grid-template-rows: auto minmax(0, 1fr); height: 100dvh; background: var(--zc-bg); color: var(--zc-text); }
+.zc-doc-editor-stage { position: relative; min-height: 0; background: var(--zc-bg); }
+.zc-doc-editor-frame { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.zc-doc-editor-loading { position: absolute; inset: 0; z-index: 2; display: grid; place-items: center; background: var(--zc-bg); color: var(--zc-muted); }
+.zc-doc-editor-message { padding: 24px clamp(18px, 4vw, 46px); }
 .zc-workbench-head { display: flex; align-items: center; gap: 10px; min-height: 59px; padding: 0 clamp(20px, 4vw, 46px); border-bottom: 1px solid var(--zc-line); background: var(--zc-surface); }
 .zc-workbench-head > div { display: flex; flex: 1; flex-direction: column; min-width: 0; }
 .zc-workbench-head strong { overflow: hidden; font-size: 13px; text-overflow: ellipsis; white-space: nowrap; }

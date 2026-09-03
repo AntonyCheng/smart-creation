@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { ArrowLeft, LoaderCircle } from "lucide-react";
 import { navigate } from "./routes";
+import { useTheme } from "./theme";
 
 type EditorConfig = {
   kind: "docx" | "pptx";
@@ -40,6 +41,7 @@ function loadScript(src: string): Promise<void> {
 }
 
 export function DocEditorPage({ projectId, docKind }: { projectId: string; docKind: "docx" | "pptx" }) {
+  const { darkMode } = useTheme();
   const [message, setMessage] = useState("");
   const [ready, setReady] = useState(false);
   const placeholderRef = useRef<HTMLDivElement | null>(null);
@@ -73,7 +75,9 @@ export function DocEditorPage({ projectId, docKind }: { projectId: string; docKi
               forcesave: true,
               compactHeader: true,
               hideRightMenu: true,
-              uiTheme: "theme-classic-light",
+              // OnlyOffice reads the theme once at init; the effect re-creates
+              // the editor when darkMode flips so the iframe follows the app.
+              uiTheme: darkMode ? "theme-dark" : "theme-classic-light",
             },
           },
           height: "100%",
@@ -92,19 +96,19 @@ export function DocEditorPage({ projectId, docKind }: { projectId: string; docKi
         // The iframe may already be gone during unmount races.
       }
     };
-  }, [docKind, projectId]);
+  }, [docKind, projectId, darkMode]);
 
-  return <main style={{ height: "100dvh", boxSizing: "border-box", display: "flex", flexDirection: "column", gap: 12, padding: "14px 18px", background: "#f7f7f8" }}>
-    <header className="zc-workbench-head" style={{ margin: 0 }}>
+  return <main className="zc-doc-editor-shell">
+    <header className="zc-workbench-head">
       <button className="zc-icon" type="button" aria-label="返回项目" onClick={() => navigate(`/workspace/${projectId}`)}><ArrowLeft size={19} /></button>
       <div><strong>手动编辑</strong><span>{docKind === "docx" ? "公文 WYSIWYG 编辑，保存后自动同步回创作源" : "PPTX 定稿编辑，保存后更新可下载文稿"}</span></div>
     </header>
     {message
-      ? <div className="zc-panel" style={{ maxWidth: 520 }}><p>{message}</p><button className="zc-secondary" type="button" onClick={() => navigate(`/workspace/${projectId}`)}>返回项目</button></div>
-      : <div style={{ flex: 1, minHeight: 0, position: "relative" }}>
-        {!ready && <div style={{ position: "absolute", inset: 0, display: "grid", placeItems: "center", background: "#f7f7f8", zIndex: 2 }}><LoaderCircle className="zc-spin" size={26} /></div>}
+      ? <div className="zc-doc-editor-message"><div className="zc-panel" style={{ maxWidth: 520 }}><p>{message}</p><button className="zc-secondary" type="button" onClick={() => navigate(`/workspace/${projectId}`)}>返回项目</button></div></div>
+      : <div className="zc-doc-editor-stage">
+        {!ready && <div className="zc-doc-editor-loading"><LoaderCircle className="zc-spin" size={26} /></div>}
         {/* DocsAPI 会在占位元素内部插入 100% 高度的 iframe，占位元素必须有真实尺寸 */}
-        <div ref={placeholderRef} id="onlyoffice-placeholder" style={{ position: "absolute", inset: 0 }} />
+        <div ref={placeholderRef} id="onlyoffice-placeholder" className="zc-doc-editor-frame" />
       </div>}
   </main>;
 }
