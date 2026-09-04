@@ -10,14 +10,14 @@
 | worker 适配器 | `webapp/worker/adapters/gongwen.py` | 运行时配置、docx 校验、排版忠实性校验、`finalize()` 渲染预览 |
 | 提纲提示词 | `webapp/api/outline_prompts.py` 的 `"gongwen"` 条目 | 文种/发文机关/主送/篇幅/结构 |
 | 数据模型 | `projects.skill_id` / `jobs.skill_id` / `projects.mode` / `jobs.mode` / `ArtifactKind`（含 DOCX/PDF/PNG） | 迁移 0019/0020/0021 |
-| 执行环境 | runner 镜像（常驻） | 含 LibreOffice、poppler、anydoc；公文字体由 skill 自带（`assets/fonts/`），经运行时 fontconfig 生效 |
+| 执行环境 | runner 镜像（常驻） | 含 LibreOffice、poppler、anydoc、中文 OCR（PaddleOCR PP-OCRv5 mobile，独立 `/opt/ocr-venv`，模型烤进镜像 `docker/ocr-models`）；公文字体由 skill 自带（`assets/fonts/`），经运行时 fontconfig 生效 |
 
 ## 创作模式（frontend.modes）
 
 skill 可在 manifest `frontend.modes` 声明多个创作流程，每个模式自带 `stages` 与 `fields`（表单 schema）；`projects.mode` 在创建时选定并冻结，`jobs.mode` 为提交时快照，经 `PPTMASTER_JOB_MODE` 下发 worker。无 `modes` 的 skill（如 ppt-master）沿用顶层 `frontend.stages` 单模式，行为不变。
 
 - **draft（公文起草）**：阶段 `requirements → outline → generating → preview`；字段含文种、发文机关、主送、字数范围、起草深度等；大纲经 `creative-outline` 生成后注入任务。
-- **typeset（公文排版）**：阶段 `content → format → generating → preview`；`content` 阶段收集正文（粘贴进 `requirements.content` 或上传材料——材料经 anydoc 解析并生成 `materials/<id>.extracted.md` sidecar）；`format` 阶段收集红头、发文字号、主送、成文日期、印章等版式字段。任务 prompt 由 `_typeset_prompt` 组装：**正文逐字保留契约**（粘贴正文包裹在哨兵行之间）+ 版式要素清单；不允许生成大纲。
+- **typeset（公文排版）**：阶段 `content → format → generating → preview`；`content` 阶段收集正文（粘贴进 `requirements.content` 或上传材料——材料经 `runner.extract_material` 异步解析：原生文档走 anydoc，扫描件/图片走中文 OCR 回退，统一生成 `materials/<id>.extracted.md` sidecar，解析中 `status="processing"` 会拦截生成）；`format` 阶段收集红头、发文字号、主送、成文日期、印章等版式字段。任务 prompt 由 `_typeset_prompt` 组装：**正文逐字保留契约**（粘贴正文包裹在哨兵行之间）+ 版式要素清单；不允许生成大纲。
 
 ## 对话改稿（features.document_refinement）
 

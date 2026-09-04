@@ -325,6 +325,14 @@ export function ProductApp() {
     void loadAdminData().catch(() => setNotice("无法载入平台管理数据。"));
   }, [loadAdminData, nav, user]);
 
+  useEffect(() => {
+    if (!activeProjectId) return;
+    const parsing = (materialsByProject[activeProjectId] ?? []).some((material) => material.status === "processing");
+    if (!parsing) return;
+    const timer = window.setInterval(() => void loadMaterials(activeProjectId).catch(() => undefined), 4000);
+    return () => window.clearInterval(timer);
+  }, [activeProjectId, materialsByProject, loadMaterials]);
+
   const activeProject = projects.find((project) => project.id === activeProjectId) ?? null;
   const activeJobs = activeProjectId ? jobsByProject[activeProjectId] ?? [] : [];
   const activeJob = activeJobs.find((job) => job.id === selectedJobId) ?? activeJobs[0] ?? null;

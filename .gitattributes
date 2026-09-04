@@ -20,3 +20,5 @@ Caddyfile text eol=lf
 *.otf binary
 *.woff binary
 *.woff2 binary
+# PaddleOCR inference weights vendored under docker/ocr-models/.
+*.pdiparams binary

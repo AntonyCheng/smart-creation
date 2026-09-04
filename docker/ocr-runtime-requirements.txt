@@ -1,0 +1,6 @@
+# Isolated runtime for the Chinese OCR fallback (scanned PDFs / images).
+# Installed into its own /opt/ocr-venv in Dockerfile.runner so PaddlePaddle
+# never mixes with the application virtualenv. Pins match the upstream
+# document-runtime this port is modelled on.
+paddlepaddle==3.2.2
+paddleocr==3.5.0

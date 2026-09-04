@@ -93,6 +93,11 @@ services:
       PPTMASTER_WEB_UID: ${PPTMASTER_WORKER_UID:-1001}
       OPENCODE_IDLE_TIMEOUT_SECONDS: ${PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS:-600}
       PPTMASTER_CONFIG_ENCRYPTION_KEY: ${PPTMASTER_CONFIG_ENCRYPTION_KEY:-}
+      # Chinese OCR fallback for scanned-PDF / image materials. The runtime and
+      # PP-OCRv5 mobile models are baked into the image; these only tune it.
+      DOCUMENT_OCR_ENABLED: ${PPTMASTER_OCR_ENABLED:-true}
+      DOCUMENT_OCR_TIMEOUT_MS: ${PPTMASTER_OCR_TIMEOUT_MS:-180000}
+      DOCUMENT_OCR_SERVER_PROFILE_ENABLED: ${PPTMASTER_OCR_SERVER_PROFILE_ENABLED:-false}
     volumes:
       - ./data/projects:/srv/projects
       # Optional static OpenCode config fallback for the agent subprocesses.

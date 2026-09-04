@@ -1075,3 +1075,17 @@ def export_editor_revision(job_id_text: str) -> None:
                 "text": "新版演示文稿导出失败，请检查本页文本或属性后重新保存。",
             },
         )
+
+
+@celery_app.task(name="runner.extract_material")
+def extract_material(material_id_text: str) -> None:
+    """Extract one uploaded project material (anydoc + Chinese OCR fallback).
+
+    Runs on the dedicated ``pptmaster-documents`` queue so a slow OCR pass
+    never blocks generation. Extraction persists its own terminal status and
+    never raises, so a crash here just leaves the material retryable.
+    """
+
+    from worker.document.extraction import extract_material as _run
+
+    _run(material_id_text)

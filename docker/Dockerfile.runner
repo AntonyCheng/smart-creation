@@ -23,6 +23,7 @@ RUN sed -i "s|http://deb.debian.org/debian|${APT_MIRROR}|g" /etc/apt/sources.lis
     && apt-get install -y --no-install-recommends \
         bash build-essential ca-certificates curl fd-find ffmpeg findutils fontconfig \
         fonts-dejavu-core fonts-noto-cjk fonts-noto-color-emoji git jq libstdc++6 \
+        libgl1 libglib2.0-0 libgomp1 \
         libreoffice-draw libreoffice-writer openssh-client pandoc pkg-config poppler-utils procps psmisc \
         ripgrep tini unzip xz-utils zip \
     && rm -rf /var/lib/apt/lists/* \
@@ -43,6 +44,20 @@ COPY docker/worker-requirements.txt /tmp/worker-requirements.txt
 RUN pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/webapp-requirements.txt \
     && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/worker-requirements.txt \
     && pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" "python-pptx>=0.6.21" "XlsxWriter>=3.0.0" "skia-pathops>=0.9.2" "uharfbuzz>=0.50.0"
+
+# Isolated PaddleOCR runtime for the scanned-PDF / image fallback. Kept in its
+# own virtualenv so PaddlePaddle never mixes with the application deps. The
+# PP-OCRv5 mobile models are vendored (docker/ocr-models) and loaded offline
+# via PADDLE_PDX_CACHE_HOME + PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK.
+COPY docker/ocr-runtime-requirements.txt /tmp/ocr-runtime-requirements.txt
+RUN python -m venv /opt/ocr-venv \
+    && /opt/ocr-venv/bin/pip install --no-cache-dir --index-url "${PIP_INDEX_URL}" -r /tmp/ocr-runtime-requirements.txt
+COPY docker/ocr-models /opt/ocr-models
+ENV DOCUMENT_OCR_ENABLED=true \
+    DOCUMENT_OCR_PYTHON=/opt/ocr-venv/bin/python \
+    DOCUMENT_OCR_WORKER=/app/webapp/worker/document/ocr_worker.py \
+    DOCUMENT_OCR_MODELS_DIR=/opt/ocr-models \
+    DOCUMENT_OCR_TIMEOUT_MS=180000
 
 # Agent-facing content lives at the same /app paths the skills expect.
 COPY AGENTS.md /app/AGENTS.md

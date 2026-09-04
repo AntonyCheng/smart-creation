@@ -17,14 +17,13 @@ import xml.etree.ElementTree as ET
 import zipfile
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import unquote, urlsplit
 from urllib.request import Request as UrlRequest, urlopen
 from uuid import UUID
 
-import anydoc
 from fastapi import Depends, FastAPI, File, HTTPException, Request, Response, UploadFile, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -37,6 +36,14 @@ from . import outline_prompts
 from .config import get_settings
 from .database import SessionLocal, get_db
 from .deps import get_current_user, get_owned_project, require_admin, require_super_admin
+from .materials import (
+    _MATERIAL_EXTENSIONS,
+    _MATERIAL_MAX_BYTES,
+    _MATERIAL_RAW_TEXT_EXTENSIONS,
+    _extract_material,
+    _material_path,
+    _material_sidecar_path,
+)
 from skills.registry import get_skill_manifest, list_skill_manifests
 from .models import (
     Artifact,
@@ -1141,115 +1148,11 @@ def _material_out(material: ProjectMaterial) -> ProjectMaterialOut:
     )
 
 
-_MATERIAL_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".docm",
-    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
-    ".xls", ".xlsx", ".xlsm", ".xlsb",
-    ".odt", ".ods", ".odp",
-    ".rtf", ".epub", ".csv",
-    ".txt", ".md", ".markdown",
-    ".png", ".jpg", ".jpeg", ".webp",
-}
-# Document formats delegated to the bundled anydoc converter. It detects the
-# format from file content, so legacy (.doc/.xls/.ppt) and mislabeled office
-# files still parse, and PDF/RTF/EPUB/ODF gain upload-time excerpts.
-_ANYDOC_EXTENSIONS = {
-    ".pdf", ".doc", ".docx", ".docm",
-    ".ppt", ".pps", ".pot", ".pptx", ".pptm", ".ppsx", ".ppsm",
-    ".xls", ".xlsx", ".xlsm", ".xlsb",
-    ".odt", ".ods", ".odp",
-    ".rtf", ".epub", ".csv",
-}
-_MATERIAL_RAW_TEXT_EXTENSIONS = {".txt", ".md", ".markdown"}
-_MATERIAL_MAX_BYTES = 100 * 1024 * 1024
-_MATERIAL_PREVIEW_LIMIT = 12_000
+# Extension policy, anydoc extraction, and the workspace-bounded path
+# resolver moved to api.materials so the runner's async extraction task can
+# reuse them without importing the FastAPI app. Only the prompt budget, used
+# by the context builders below, stays here.
 _MATERIAL_PROMPT_LIMIT = 24_000
-_MATERIAL_SIDECAR_SUFFIX = ".extracted.md"
-
-
-def _material_text_preview(text: str) -> tuple[str, int]:
-    """Collapse inline whitespace but keep line structure for model context."""
-
-    lines = (re.sub(r"[ \t]+", " ", line).strip() for line in text.splitlines())
-    normalized = "\n".join(line for line in lines if line)
-    return normalized[:_MATERIAL_PREVIEW_LIMIT], len(normalized)
-
-
-def _read_material_markdown(path: Path, suffix: str) -> str:
-    """Return the full extracted Markdown for one stored material."""
-
-    if suffix in _MATERIAL_RAW_TEXT_EXTENSIONS:
-        return path.read_text(encoding="utf-8-sig", errors="replace")
-    return anydoc.to_markdown(str(path))
-
-
-def _material_sidecar_path(material_path: Path) -> Path:
-    """Resolve the pre-extracted Markdown twin stored beside one material."""
-
-    return material_path.with_suffix(_MATERIAL_SIDECAR_SUFFIX)
-
-
-def _extract_material(path: Path, suffix: str) -> dict[str, object]:
-    """Extract upload-time context via anydoc; extraction never fails an upload.
-
-    A successful document extraction also stores the full Markdown beside the
-    original file so generation jobs can read it instead of re-converting.
-    """
-
-    if suffix not in _ANYDOC_EXTENSIONS and suffix not in _MATERIAL_RAW_TEXT_EXTENSIONS:
-        # Images and unknown reference-only attachments keep the original file.
-        return {
-            "parse_mode": "deferred",
-            "parse_status": "deferred",
-            "parse_message": "该格式保留原文件，生成任务启动时解析。",
-        }
-    try:
-        text = _read_material_markdown(path, suffix)
-    except Exception as exc:  # noqa: BLE001 - conversion errors degrade to deferred
-        logger.warning("Material preview extraction failed for %s: %s", path.name, exc)
-        encrypted = "encrypted" in type(exc).__name__.lower()
-        return {
-            "parse_mode": "deferred",
-            "parse_status": "failed",
-            "parse_message": (
-                "文件已加密或设有打开密码，无法提取内容摘要，生成任务也无法读取该文件。"
-                if encrypted
-                else "摘要提取未完成，生成任务仍会读取原文件。"
-            ),
-        }
-    preview, extracted_chars = _material_text_preview(text)
-    if not preview:
-        return {
-            "parse_mode": "inline",
-            "parse_status": "empty",
-            "extracted_chars": 0,
-            "parse_message": "未提取到可检索文本，生成任务仍会读取原文件。",
-        }
-    metadata: dict[str, object] = {
-        "parse_mode": "inline",
-        "parse_status": "ready",
-        "extracted_chars": extracted_chars,
-        "text_excerpt": preview,
-        "parse_message": "已提取文本摘要，将参与需求、大纲和页面生成。",
-    }
-    if suffix in _ANYDOC_EXTENSIONS:
-        sidecar_path = _material_sidecar_path(path)
-        try:
-            sidecar_path.write_text(text, encoding="utf-8")
-            metadata["extracted_md_path"] = f"materials/{sidecar_path.name}"
-        except OSError as exc:
-            logger.warning("Material sidecar write failed for %s: %s", path.name, exc)
-    return metadata
-
-
-def _material_path(project: Project, material: ProjectMaterial) -> Path:
-    """Resolve a project material while preserving the project workspace boundary."""
-
-    root = _workspace_path(project)
-    path = (root / material.relative_path).resolve()
-    if root not in path.parents:
-        raise RuntimeError("Project material is outside WORKSPACE_ROOT")
-    return path
 
 
 def _material_prompt_context(materials: list[ProjectMaterial]) -> str:
@@ -1285,9 +1188,14 @@ def _has_extractable_material_text(materials: list[ProjectMaterial]) -> bool:
     carries that status. Any code path that treats "a material was
     attached" as "there is real text to work with" (typeset's content
     source, or its field-recognition source) must check this instead.
+
+    ``partial`` is a low-confidence OCR result — still usable text.
     """
 
-    return any(str((material.meta or {}).get("parse_status") or "") == "ready" for material in materials)
+    return any(
+        str((material.meta or {}).get("parse_status") or "") in {"ready", "partial"}
+        for material in materials
+    )
 
 
 def _material_planning_context(materials: list[ProjectMaterial]) -> str:
@@ -1313,6 +1221,41 @@ def _material_planning_context(materials: list[ProjectMaterial]) -> str:
         preview_budget -= len(excerpt)
         lines.append(f"- {material.original_filename} 摘要：{excerpt}")
     return "\n".join(lines)
+
+
+# A material that has sat in "processing" longer than this is treated as a
+# lost job (broker hiccup, worker crash mid-parse) and no longer blocks
+# generation — it is simply left out until the user re-uploads it.
+_MATERIAL_PROCESSING_STALE_AFTER = timedelta(minutes=15)
+
+
+async def _raise_if_materials_processing(db: AsyncSession, project_id: UUID) -> None:
+    """Block outline / generation while an uploaded material is still parsing.
+
+    A scanned PDF or image now extracts asynchronously (anydoc + OCR) in the
+    runner. Starting a job before that lands would silently drop the file's
+    content, so callers that fold materials into a prompt gate on this first.
+    A parse that stalled past ``_MATERIAL_PROCESSING_STALE_AFTER`` no longer
+    blocks — it is considered lost rather than in flight.
+    """
+
+    cutoff = datetime.now(UTC) - _MATERIAL_PROCESSING_STALE_AFTER
+    pending = (
+        await db.execute(
+            select(ProjectMaterial.original_filename)
+            .where(
+                ProjectMaterial.project_id == project_id,
+                ProjectMaterial.status == "processing",
+                ProjectMaterial.updated_at >= cutoff,
+            )
+            .limit(1)
+        )
+    ).scalar_one_or_none()
+    if pending is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            f"材料“{pending}”仍在解析中，请稍候再试。",
+        )
 
 
 _TEMPLATE_SPEC_OVERVIEW_LIMIT = 1_500
@@ -2130,6 +2073,44 @@ async def list_project_materials(
     return [_material_out(material) for material in materials]
 
 
+async def _dispatch_material_extraction(
+    db: AsyncSession,
+    project: Project,
+    material: ProjectMaterial,
+    destination: Path,
+    suffix: str,
+) -> None:
+    """Hand one stored material to the runner's document queue.
+
+    If the broker is unreachable the upload must still succeed, so we fall
+    back to a synchronous best-effort extraction (no OCR) inline.
+    """
+
+    try:
+        from runner.celery_app import celery_app
+
+        celery_app.send_task("runner.extract_material", args=[str(material.id)])
+        return
+    except Exception:  # noqa: BLE001 - a queue outage must not lose the upload
+        logger.warning("Material %s queue dispatch failed; extracting inline", material.id)
+
+    try:
+        fallback = await asyncio.to_thread(_extract_material, destination, suffix)
+        material.status = "ready"
+        material.meta = {**(material.meta or {}), **fallback}
+    except Exception:  # noqa: BLE001
+        logger.exception("Inline material fallback failed for %s", material.id)
+        material.status = "failed"
+        material.meta = {
+            **(material.meta or {}),
+            "parse_status": "failed",
+            "parse_message": "摘要提取未完成，生成任务仍会读取原文件。",
+        }
+    project.updated_at = datetime.now(UTC)
+    await db.commit()
+    await db.refresh(material)
+
+
 @app.post("/api/v1/projects/{project_id}/materials", response_model=ProjectMaterialOut, status_code=status.HTTP_201_CREATED)
 async def upload_project_material(
     file: UploadFile = File(...),
@@ -2172,16 +2153,28 @@ async def upload_project_material(
             except (zipfile.BadZipFile, OSError, ValueError) as exc:
                 raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"PPTX 材料无效：{exc}") from exc
         material.size_bytes = total
-        material.status = "ready"
         metadata = dict(material.meta or {})
         metadata.update({"stored": True})
-        # anydoc conversion is CPU-bound Rust; keep the event loop responsive.
-        metadata.update(await asyncio.to_thread(_extract_material, destination, suffix))
+        if suffix in _MATERIAL_RAW_TEXT_EXTENSIONS:
+            # Plain text is free to read; keep the instant-feedback path.
+            material.status = "ready"
+            metadata.update(await asyncio.to_thread(_extract_material, destination, suffix))
+        else:
+            # Everything else (anydoc conversion, plus scanned-PDF / image
+            # OCR) runs in the runner's document queue so a slow OCR pass
+            # never blocks this request. The frontend polls until it lands.
+            material.status = "processing"
+            metadata.update(
+                {
+                    "parse_mode": "deferred",
+                    "parse_status": "pending",
+                    "parse_message": "正在解析材料…",
+                }
+            )
         material.meta = metadata
         project.updated_at = datetime.now(UTC)
         await db.commit()
         await db.refresh(material)
-        return _material_out(material)
     except Exception:
         await db.rollback()
         destination.unlink(missing_ok=True)
@@ -2189,6 +2182,10 @@ async def upload_project_material(
         raise
     finally:
         await file.close()
+
+    if material.status == "processing":
+        await _dispatch_material_extraction(db, project, material, destination, suffix)
+    return _material_out(material)
 
 
 @app.delete("/api/v1/projects/{project_id}/materials/{material_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -2884,6 +2881,7 @@ async def generate_project_creative_outline(
     if payload.requirements is not None:
         state.requirements = payload.requirements
     requirements = dict(state.requirements or {})
+    await _raise_if_materials_processing(db, project.id)
     materials = (
         await db.execute(
             select(ProjectMaterial)
@@ -2933,6 +2931,7 @@ async def infer_project_creative_requirements(
     skill_manifest = _registered_skill(project.skill_id)
     mode_definition = _skill_mode(skill_manifest, project.mode)
     draft_text = payload.draft.strip()
+    await _raise_if_materials_processing(db, project.id)
     materials = (
         await db.execute(
             select(ProjectMaterial)
@@ -3198,6 +3197,7 @@ async def create_job(
         history_prompt = _refinement_history_prompt(history)
         if history_prompt:
             job_prompt = f"{job_prompt}\n\n{history_prompt}"
+    await _raise_if_materials_processing(db, locked_project.id)
     project_materials = (
         await db.execute(
             select(ProjectMaterial)

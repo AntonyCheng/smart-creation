@@ -11,7 +11,11 @@ celery_app.conf.update(
     task_time_limit=settings.celery_task_time_limit,
     task_track_started=True,
     # Template imports run agent-assisted work and would otherwise hold the
-    # single-concurrency generation queue for minutes at a time.
-    task_routes={"runner.import_template": {"queue": "pptmaster-template-imports"}},
+    # single-concurrency generation queue for minutes at a time. Material
+    # extraction (anydoc + OCR) gets its own queue for the same reason.
+    task_routes={
+        "runner.import_template": {"queue": "pptmaster-template-imports"},
+        "runner.extract_material": {"queue": "pptmaster-documents"},
+    },
 )
 celery_app.autodiscover_tasks(["runner"])
