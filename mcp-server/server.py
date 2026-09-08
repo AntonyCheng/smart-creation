@@ -1,4 +1,4 @@
-"""智创AI助手 MCP facade.
+"""智创AI专家 MCP facade.
 
 The MCP layer deliberately stays thin: the host model gathers requirements and
 asks follow-up questions, while the platform remains the source of truth for

@@ -754,7 +754,7 @@ export function ProductApp() {
   if (!user && !authResolved) return null;
 
   if (!user) {
-    return <><NoticeHost message={notice} onClose={() => setNotice("")} /><main className="zc-auth"><section className="zc-auth-card"><div className="zc-logo"><img src="/logo-128.png" alt="" /><span>智创AI助手</span></div><h1>{token ? "创建工作区账号" : "登录智创AI助手"}</h1><p>从一个想法，到一份能交付的作品</p><form onSubmit={submitAuth}><label>账号<input value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username" /></label>{token && <label>显示名称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required /></label>}<label>密码<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={8} required autoComplete={token ? "new-password" : "current-password"} /></label><button className="zc-primary" type="submit">{token ? <UserPlus size={17} /> : <LogIn size={17} />}{token ? "完成注册" : "登录"}</button></form></section></main></>;
+    return <><NoticeHost message={notice} onClose={() => setNotice("")} /><main className="zc-auth"><section className="zc-auth-card"><div className="zc-logo"><img src="/logo-128.png" alt="" /><span>智创AI专家</span></div><h1>{token ? "创建工作区账号" : "登录智创AI专家"}</h1><p>从一个想法，到一份能交付的作品</p><form onSubmit={submitAuth}><label>账号<input value={username} onChange={(event) => setUsername(event.target.value)} required autoComplete="username" /></label>{token && <label>显示名称<input value={displayName} onChange={(event) => setDisplayName(event.target.value)} required /></label>}<label>密码<input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={8} required autoComplete={token ? "new-password" : "current-password"} /></label><button className="zc-primary" type="submit">{token ? <UserPlus size={17} /> : <LogIn size={17} />}{token ? "完成注册" : "登录"}</button></form></section></main></>;
   }
 
   if (route.kind === "workspace" && activeProject?.id === route.projectId) {
@@ -920,7 +920,7 @@ function ReplicaDashboardShell(props: ReplicaDashboardShellProps) {
       <div className="kppt-brand-row">
         <button className="kppt-brand" type="button" onClick={props.onCreate} aria-label="返回我的项目">
           <img src="/logo-128.png" alt="" />
-          <span><strong>智创AI助手</strong><small>AI CREATION WORKSPACE</small></span>
+          <span><strong>智创AI专家</strong><small>AI EXPERT WORKSPACE</small></span>
         </button>
       </div>
       <button className="kppt-create" type="button" onClick={props.onCreate}><Plus size={18} /><span>{skillFrontend?.create_button_label || "创建 PPT"}</span></button>
@@ -946,7 +946,7 @@ function ReplicaDashboardShell(props: ReplicaDashboardShellProps) {
       <div className={`zc-content kppt-content ${props.activeNav === "admin" ? "kppt-content--admin" : ""}`}>
         {props.activeNav !== "projects" ? <div className="kppt-page-body">{props.pageBody}</div> : <>
         <section className="kppt-dashboard-hero" aria-labelledby="kppt-create-title">
-          <div className="kppt-eyebrow"><Sparkles size={14} />智创AI助手</div>
+          <div className="kppt-eyebrow"><Sparkles size={14} />智创AI专家</div>
           <h1 id="kppt-create-title">{skillFrontend?.hero_title || "把一个想法，变成一套能讲清楚的 PPT"}</h1>
           <p>{skillFrontend?.hero_subtitle || "先梳理需求，再设计大纲；每一步都由你确认，生成后还能逐页对话精修。"}</p>
           {props.skills.length > 1 && <div className="kppt-segmented kppt-skill-switch" role="tablist" aria-label="创作类型">{props.skills.map((skill) => <button key={skill.id} type="button" role="tab" aria-selected={skill.id === props.draftSkillId} className={skill.id === props.draftSkillId ? "is-active" : ""} onClick={() => props.onDraftSkillChange(skill.id)}>{skill.display_name}</button>)}</div>}

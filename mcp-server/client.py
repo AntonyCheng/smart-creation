@@ -1,4 +1,4 @@
-"""Authenticated HTTP client for the 智创AI助手 platform API."""
+"""Authenticated HTTP client for the 智创AI专家 platform API."""
 
 from __future__ import annotations
 
@@ -35,7 +35,7 @@ class PlatformClient:
                         json={"username": config.PPTMASTER_USERNAME, "password": config.PPTMASTER_PASSWORD},
                     )
             except httpx.HTTPError as error:
-                raise PlatformApiError("无法连接智创AI助手平台") from error
+                raise PlatformApiError("无法连接智创AI专家平台") from error
             if response.is_error:
                 raise self._error(response, "平台登录失败")
             token = response.cookies.get(config.PPTMASTER_SESSION_COOKIE_NAME)
@@ -66,7 +66,7 @@ class PlatformClient:
             ) as client:
                 response = await client.request(method, f"{self._base_url}{path}", **kwargs)
         except httpx.HTTPError as error:
-            raise PlatformApiError("无法连接智创AI助手平台") from error
+            raise PlatformApiError("无法连接智创AI专家平台") from error
         if response.status_code == 401:
             self._cookies = {}
             await self._login()
@@ -74,7 +74,7 @@ class PlatformClient:
                 async with httpx.AsyncClient(timeout=config.API_TIMEOUT_SECONDS, cookies=self._cookies) as client:
                     response = await client.request(method, f"{self._base_url}{path}", **kwargs)
             except httpx.HTTPError as error:
-                raise PlatformApiError("无法连接智创AI助手平台") from error
+                raise PlatformApiError("无法连接智创AI专家平台") from error
         if response.is_error:
             raise self._error(response, "平台请求失败")
         if response.status_code == 204:
@@ -125,7 +125,7 @@ class PlatformClient:
             async with httpx.AsyncClient(timeout=max(config.API_TIMEOUT_SECONDS, 120), cookies=self._cookies) as client:
                 response = await client.get(f"{self._base_url}/api/v1/projects/{project_id}/jobs/{job_id}/artifacts/{artifact_id}/download")
         except httpx.HTTPError as error:
-            raise PlatformApiError("无法连接智创AI助手平台") from error
+            raise PlatformApiError("无法连接智创AI专家平台") from error
         if response.is_error:
             raise self._error(response, "产物下载失败")
         return response.content, response.headers.get("content-type", "application/octet-stream")

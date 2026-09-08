@@ -1,4 +1,4 @@
-# 智创AI助手：多 Skill 平台化改造方案
+# 智创AI专家：多 Skill 平台化改造方案
 
 > 状态：方案已评审待实施 ｜ 分支：platform ｜ 日期：2026-08-31
 
@@ -6,7 +6,7 @@
 
 当前仓库（branch `platform`）是「ppt-master 开源 skill 项目 + 平台层」的混合体，根目录身兼两职。平台核心实为 `webapp/`（FastAPI api + Celery runner + 容器内 worker + React 前端）、`docker/`、`mcp-server/`，通过 OpenCode 运行时驱动 `skills/ppt-master` 生成 PPTX，且**全链路对 ppt-master 硬编码**（无 skill 字段、worker 只认 svg_output/pptx、prompt 只指 ppt-master）。
 
-改造目标：平台成为主体，skill 降级为可插拔组件；接入第二个 skill「公文写作」（产出标准格式 .docx，同事调试中尚未入库），并为后续 N 个 skill 预留扩展位；前端聊天输入框上方加工作类型开关；品牌改名「智创PPT专家 → 智创AI助手」（仅前端文案）。
+改造目标：平台成为主体，skill 降级为可插拔组件；接入第二个 skill「公文写作」（产出标准格式 .docx，同事调试中尚未入库），并为后续 N 个 skill 预留扩展位；前端聊天输入框上方加工作类型开关；品牌为「智创AI专家」（前端展示文案）。
 
 **已确认的决策**：
 - 上游 ppt-master 更新走**手动拷贝**，同步单元必须与平台文件隔离
@@ -18,7 +18,7 @@
 ## 一、目标目录结构
 
 ```
-<repo root>                          # 智创AI助手 平台仓库
+<repo root>                          # 智创AI专家 平台仓库
 ├── AGENTS.md                        # 多 skill 分发入口（改造方式见 §五；烤进 worker 镜像）
 ├── CLAUDE.md                        # 不变（导入 AGENTS.md 模式）
 ├── README.md                        # 重写：平台 README
@@ -154,7 +154,7 @@ ppt-master 的 manifest 每个值都溯源到现有常量（init ← `worker/mai
 - **CreativeWorkspace.tsx**：阶段数组（:82-88 硬编码）与大纲字段标签改由项目 skill 的 manifest 驱动；gongwen 渲染 4 阶段（无选择模板），大纲编辑器读「部分/内容要点」标签；阶段切换逻辑按 id 索引，天然兼容阶段删减；需求表单的 `page_range` 对 gongwen 隐藏
 - **公文预览分两步**：v1（Phase D）仅下载按钮（下载链路本就通用）；C2 增后端 `GET .../artifacts/{id}/preview`——mammoth docx→HTML + nh3 消毒，前端滚动面板渲染（不引浏览器端 mammoth.js，转换实现与 skill 输入侧共享、消毒留在服务端）
 - **编辑器保持 PPT 专属**：非 ppt 项目隐藏 `PresentationEditor` 路由与「手动编辑」入口（AssetPages.tsx:110），与 API 守卫双保险
-- **改名**：`index.html:8`、`ProductApp.tsx:730,882,908`（:882 处副标题 `AI PRESENTATION AGENT` → 如 `AI CREATION WORKSPACE`）；`App.tsx` 为死代码，顺带改齐便于 grep 卫生；PPT 专属 hero 文案不手改——由 ppt-master manifest 提供，品牌壳通用而 hero 仍 PPT 正确
+- **改名**：`index.html:8`、`ProductApp.tsx:730,882,908`（:882 处副标题 `AI PRESENTATION AGENT` → 如 `AI EXPERT WORKSPACE`）；`App.tsx` 为死代码，顺带改齐便于 grep 卫生；PPT 专属 hero 文案不手改——由 ppt-master manifest 提供，品牌壳通用而 hero 仍 PPT 正确
 
 ## 七、MCP 泛化（最后，最小化）
 

@@ -190,7 +190,7 @@ skills/ppt-master/templates/brands/*/exports/
 skills/ppt-master/templates/decks/*/exports/
 skills/ppt-master/templates/layouts/*/exports/
 
-# ── 智创AI助手 平台段 ──────────────────────────────
+# ── 智创AI专家 平台段 ──────────────────────────────
 # Compose 运行时状态（postgres/caddy/projects 绑定挂载），绝不入库
 docker/data/
 
