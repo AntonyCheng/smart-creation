@@ -1,7 +1,8 @@
 export type User = { id: string; username: string; display_name: string; role: string; is_active: boolean; deletion_pending: boolean };
 export type ProviderModel = { id: string; model_id: string; display_name: string; is_active: boolean; is_default: boolean; is_verified: boolean; last_tested_at: string | null; last_test_error: string | null };
 export type Provider = { id: string; slug: string; display_name: string; base_url: string; api_key_hint: string; is_active: boolean; models: ProviderModel[] };
-export type Project = { id: string; title: string; skill_id: string; mode: string | null; created_at: string; updated_at: string };
+export type ProjectCover = { job_id: string; artifact_id: string; kind: string };
+export type Project = { id: string; title: string; skill_id: string; mode: string | null; created_at: string; updated_at: string; cover: ProjectCover | null };
 export type SkillStage = { id: string; label: string; description: string };
 export type SkillOutlineField = { name: string; label: string; required: boolean; max_length: number | null; default: string };
 export type SkillModeField = { name: string; label: string; type: string; required: boolean; max_length: number | null; default: string; placeholder: string; options: string[]; wide: boolean };

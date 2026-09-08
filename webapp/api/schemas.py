@@ -73,6 +73,14 @@ class ProjectCreateIn(BaseModel):
     prompt_snippet_id: UUID | None = None
 
 
+class ProjectCoverOut(BaseModel):
+    """Points the dashboard card at the first previewable page of a project."""
+
+    job_id: UUID
+    artifact_id: UUID
+    kind: str
+
+
 class ProjectOut(BaseModel):
     id: UUID
     title: str
@@ -80,6 +88,7 @@ class ProjectOut(BaseModel):
     mode: str | None = None
     created_at: datetime
     updated_at: datetime
+    cover: ProjectCoverOut | None = None
 
 
 class ProjectMaterialOut(BaseModel):

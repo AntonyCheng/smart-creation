@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { MoreHorizontal, Pencil, Trash2 } from "lucide-react";
 import type { Job, JobStatus, Project } from "./appTypes";
 
@@ -11,8 +11,13 @@ function formatDate(value: string): string {
 
 export function ReplicaProjectCard({ project, job, palette, skillLabel, onOpen, onDelete }: { project: Project; job?: Job; palette: number; skillLabel?: string; onOpen: () => void; onDelete: () => void }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [coverBroken, setCoverBroken] = useState(false);
   const status = job ? statusLabel[job.status] : "草稿";
-  return <article className={`kppt-project-card kppt-palette-${palette}${menuOpen ? " is-menu-open" : ""}`}><button className="kppt-project-preview" type="button" onClick={onOpen}>{skillLabel && <em className="kppt-skill-badge">{skillLabel}</em>}<span>AI · DECK</span><div><strong>{project.title}</strong><small>{job?.template_name || "需求确认后可继续生成"}</small></div><i /><i /></button><div className="kppt-project-body"><button type="button" onClick={onOpen}>{project.title}</button><button className="kppt-card-menu" type="button" aria-label="项目更多操作" onClick={() => setMenuOpen((current) => !current)}><MoreHorizontal size={17} /></button>{menuOpen && <div className="kppt-card-menu-popover"><button type="button" onClick={onOpen}><Pencil size={14} />继续创作</button><button className="is-danger" type="button" onClick={onDelete}><Trash2 size={14} />删除项目</button></div>}</div><footer><span className={`kppt-status kppt-status-${job?.status ?? "draft"}`}>{status}</span><small>{formatDate(project.updated_at)}</small></footer></article>;
+  const cover = project.cover;
+  const coverUrl = cover ? `/api/v1/projects/${project.id}/jobs/${cover.job_id}/artifacts/${cover.artifact_id}/download` : null;
+  useEffect(() => setCoverBroken(false), [coverUrl]);
+  const showCover = Boolean(coverUrl) && !coverBroken;
+  return <article className={`kppt-project-card kppt-palette-${palette}${showCover ? " has-cover" : ""}${menuOpen ? " is-menu-open" : ""}`}><button className="kppt-project-preview" type="button" onClick={onOpen}>{coverUrl && !coverBroken && <img className={`kppt-project-cover${cover && cover.kind !== "svg" ? " is-doc" : ""}`} src={coverUrl} alt="" loading="lazy" onError={() => setCoverBroken(true)} />}{skillLabel && <em className="kppt-skill-badge">{skillLabel}</em>}<span>AI · DECK</span><div><strong>{project.title}</strong><small>{job?.template_name || "需求确认后可继续生成"}</small></div><i /><i /></button><div className="kppt-project-body"><button type="button" onClick={onOpen}>{project.title}</button><button className="kppt-card-menu" type="button" aria-label="项目更多操作" onClick={() => setMenuOpen((current) => !current)}><MoreHorizontal size={17} /></button>{menuOpen && <div className="kppt-card-menu-popover"><button type="button" onClick={onOpen}><Pencil size={14} />继续创作</button><button className="is-danger" type="button" onClick={onDelete}><Trash2 size={14} />删除项目</button></div>}</div><footer><span className={`kppt-status kppt-status-${job?.status ?? "draft"}`}>{status}</span><small>{formatDate(project.updated_at)}</small></footer></article>;
 }
 
 

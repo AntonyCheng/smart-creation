@@ -15,7 +15,7 @@ import tempfile
 import time
 import xml.etree.ElementTree as ET
 import zipfile
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -103,6 +103,7 @@ from .schemas import (
     ProviderModelUpdateIn,
     ProviderOut,
     ProviderUpdateIn,
+    ProjectCoverOut,
     ProjectCreateIn,
     ProjectCreativeOutlineIn,
     ProjectCreativeRequirementsInferIn,
@@ -1006,7 +1007,7 @@ async def _ensure_models_are_idle(db: AsyncSession, model_ids: list[str]) -> Non
         )
 
 
-def _project_out(project: Project) -> ProjectOut:
+def _project_out(project: Project, cover: ProjectCoverOut | None = None) -> ProjectOut:
     return ProjectOut(
         id=project.id,
         title=project.title,
@@ -1014,7 +1015,65 @@ def _project_out(project: Project) -> ProjectOut:
         mode=project.mode,
         created_at=project.created_at,
         updated_at=project.updated_at,
+        cover=cover,
     )
+
+
+def _skill_preview_kinds(skill_id: str) -> list[str]:
+    """Preview artifact kinds for a skill, tolerant of unknown/disabled skills."""
+
+    manifest = get_skill_manifest(skill_id)
+    if not manifest:
+        return []
+    kinds = (manifest.get("frontend") or {}).get("preview_kinds")
+    return [str(kind) for kind in kinds] if kinds else ["svg"]
+
+
+async def _project_covers(
+    projects: Sequence[Project], db: AsyncSession
+) -> dict[UUID, ProjectCoverOut]:
+    """Resolve each project's cover: first previewable page of its newest job.
+
+    One query fans out over every project; rows arrive newest-job-first and
+    path-ascending, so the first row whose kind the project's skill previews is
+    the first page of the most recent job that produced previewable output.
+    """
+
+    allowed_by_project = {
+        project.id: set(_skill_preview_kinds(project.skill_id)) for project in projects
+    }
+    every_kind = {kind for kinds in allowed_by_project.values() for kind in kinds}
+    project_ids = [project.id for project in projects]
+    if not project_ids or not every_kind:
+        return {}
+    known_kinds = {kind.value for kind in ArtifactKind}
+    kind_enums = [ArtifactKind(kind) for kind in every_kind if kind in known_kinds]
+    if not kind_enums:
+        return {}
+    rows = (
+        await db.execute(
+            select(
+                Artifact.project_id,
+                Artifact.job_id,
+                Artifact.id,
+                Artifact.kind,
+                Artifact.relative_path,
+            )
+            .join(Job, Artifact.job_id == Job.id)
+            .where(Artifact.project_id.in_(project_ids), Artifact.kind.in_(kind_enums))
+            .order_by(Artifact.project_id, Job.created_at.desc(), Artifact.relative_path.asc())
+        )
+    ).all()
+    covers: dict[UUID, ProjectCoverOut] = {}
+    for project_id, job_id, artifact_id, kind, _relative_path in rows:
+        if project_id in covers or job_id is None:
+            continue
+        if kind.value not in allowed_by_project.get(project_id, set()):
+            continue
+        covers[project_id] = ProjectCoverOut(
+            job_id=job_id, artifact_id=artifact_id, kind=kind.value
+        )
+    return covers
 
 
 def _skill_mode(manifest: dict, mode: str | None) -> dict | None:
@@ -1994,7 +2053,8 @@ async def list_projects(
 
     stmt = select(Project).where(Project.owner_id == user.id).order_by(Project.updated_at.desc())
     projects = (await db.execute(stmt)).scalars().all()
-    return [_project_out(project) for project in projects]
+    covers = await _project_covers(projects, db)
+    return [_project_out(project, covers.get(project.id)) for project in projects]
 
 
 @app.post("/api/v1/projects", response_model=ProjectOut, status_code=status.HTTP_201_CREATED)

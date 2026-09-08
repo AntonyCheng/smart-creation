@@ -320,6 +320,25 @@ export function ProductApp() {
     return () => window.clearInterval(timer);
   }, [loadTemplates, nav, user]);
 
+  // Refresh the dashboard every 30s while any job is still queued or running,
+  // so finished tasks stop showing "生成中" without a manual reload. Polling
+  // stops once nothing is in flight and pauses while the tab is hidden.
+  const hasActiveJob = useMemo(
+    () => Object.values(jobsByProject).some((jobs) => jobs.some((job) => job.status === "queued" || job.status === "running")),
+    [jobsByProject],
+  );
+  useEffect(() => {
+    if (!user || nav !== "projects" || activeProjectId || !hasActiveJob) return;
+    let running = false;
+    const tick = () => {
+      if (running || document.hidden) return;
+      running = true;
+      void loadProjects().catch(() => undefined).finally(() => { running = false; });
+    };
+    const timer = window.setInterval(tick, 30000);
+    return () => window.clearInterval(timer);
+  }, [user, nav, activeProjectId, hasActiveJob, loadProjects]);
+
   useEffect(() => {
     if (!user || nav !== "admin" || user.role !== "super_admin") return;
     void loadAdminData().catch(() => setNotice("无法载入平台管理数据。"));

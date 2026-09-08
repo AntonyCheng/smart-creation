@@ -620,6 +620,14 @@ input:focus, textarea:focus, select:focus { border-color: #0f766e; outline: 2px 
 .kppt-palette-1 .kppt-project-preview i:first-of-type { border-color: #1d6046; }
 .kppt-palette-2 .kppt-project-preview { background: #e8eef9; }
 .kppt-palette-2 .kppt-project-preview i:first-of-type { border-color: #496baf; }
+.kppt-project-cover { position: absolute; inset: 0; z-index: 0; width: 100%; height: 100%; object-fit: cover; object-position: center top; background: #fff; filter: blur(2px); transform: scale(1.06); }
+/* Word / 公文 first pages are portrait and blank up top; show the mid-page instead. */
+.kppt-project-cover.is-doc { object-position: center 32%; }
+.kppt-project-card.has-cover .kppt-project-preview { background: #eef0f3; color: #fff; }
+.kppt-project-card.has-cover .kppt-project-preview::after { content: ""; position: absolute; inset: 0; z-index: 0; background: linear-gradient(180deg, rgb(15 18 22 / 14%) 0%, rgb(15 18 22 / 30%) 46%, rgb(15 18 22 / 78%) 100%); }
+.kppt-project-card.has-cover .kppt-project-preview > span { z-index: 1; color: rgb(255 255 255 / 78%); text-shadow: 0 1px 2px rgb(0 0 0 / 45%); }
+.kppt-project-card.has-cover .kppt-project-preview small { color: rgb(255 255 255 / 82%); }
+.kppt-project-card.has-cover .kppt-project-preview i { display: none; }
 .kppt-project-body { position: relative; display: flex; align-items: center; justify-content: space-between; min-height: 58px; padding: 12px 13px; }
 .kppt-project-body > button:first-child { min-width: 0; overflow: hidden; padding: 0; border: 0; background: transparent; color: #1d1f23; font-size: 12px; font-weight: 800; text-align: left; text-overflow: ellipsis; white-space: nowrap; }
 .kppt-card-menu { display: inline-flex; align-items: center; justify-content: center; flex: 0 0 auto; width: 28px; height: 28px; padding: 0; border: 0; border-radius: 7px; background: transparent; color: #737982; }
