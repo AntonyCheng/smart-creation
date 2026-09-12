@@ -1,4 +1,4 @@
-export type AdminRouteTab = "templates" | "prompts" | "users" | "models";
+export type AdminRouteTab = "templates" | "prompts" | "users" | "models" | "image-providers";
 export type AppRoute =
   | { kind: "projects" }
   | { kind: "templates" }
@@ -9,7 +9,7 @@ export type AppRoute =
   | { kind: "doc-editor"; projectId: string; docKind: "docx" | "pptx" }
   | { kind: "unknown" };
 
-const adminTabs: AdminRouteTab[] = ["templates", "prompts", "users", "models"];
+const adminTabs: AdminRouteTab[] = ["templates", "prompts", "users", "models", "image-providers"];
 
 export function parseRoute(locationValue: string): AppRoute {
   const [rawPath, rawSearch = ""] = locationValue.split("?", 2);

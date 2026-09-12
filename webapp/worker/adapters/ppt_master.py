@@ -9,6 +9,7 @@ from __future__ import annotations
 from datetime import datetime
 import hashlib
 import json
+import os
 from pathlib import Path
 import re
 import sys
@@ -288,6 +289,30 @@ def build_agent_prompt(ctx: SkillContext, template_instruction: str = "") -> str
     else:
         workspace_instruction = "The Worker has already initialized the empty project workspace."
         reply_contract = ""
+    if os.environ.get("PPTMASTER_VISION_REVIEWER_AVAILABLE") == "1":
+        reviewer_note = (
+            "A subagent named `image-reviewer` is registered with image-input support; "
+            "dispatch the Skill's isolated-reviewer step to it via the task tool when the Skill "
+            "calls for one."
+        )
+    else:
+        reviewer_note = (
+            "No image-capable subagent is registered for this run; use the Skill's "
+            "metadata-only web search path directly."
+        )
+    image_policy = f"""
+Image acquisition priority for this run (supplements, does not replace, the Skill's own
+image workflow): for any slide image whose subject is a real-world entity, place, product,
+or scene, prefer a real photograph via web image search first. Bound that search effort to
+one query-variant retry and one extra candidate page — do not exhaust the Skill's full
+replacement ladder for every image, to keep total generation time reasonable. When web
+search for an image ends Needs-Manual, before accepting a placeholder or vector
+illustration, retry that same image via AI generation (image_gen.py) if `python3
+skills/ppt-master/scripts/image_gen.py --list-backends` reports a configured backend on its
+"Resolved backend:" line (check this once per job, not once per image). Only fall back to
+native SVG illustration/icon for that image when no AI backend is configured, or AI
+generation itself fails. {reviewer_note}
+"""
     return f"""You are executing one autonomous PPT Master generation job.
 
 Read and follow /app/{conventions_doc} and the Skill entry /app/{entry_doc}. The web request is
@@ -300,8 +325,9 @@ directly beneath this exact path.
 For continuation edits, modify the existing SVG authoring files directly and preserve all
 unaffected slides. If a target slide is provided, only that slide's SVG may change; do not
 modify any other slide SVG, even if a broader redesign seems helpful. Do not run sudo, inspect /proc, inspect host permissions, or probe the
-container environment; those checks are unrelated to the presentation edit. Create a
-native editable PPTX, run the required quality checks, and export the final .pptx into
+container environment; those checks are unrelated to the presentation edit.
+{image_policy}
+Create a native editable PPTX, run the required quality checks, and export the final .pptx into
 {project_workspace}/exports. Do not access files outside {WORKSPACE} except the installed
 PPT Master Skill and its declared tools.
 

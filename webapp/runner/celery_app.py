@@ -12,9 +12,13 @@ celery_app.conf.update(
     task_track_started=True,
     # Template imports run agent-assisted work and would otherwise hold the
     # single-concurrency generation queue for minutes at a time. Material
-    # extraction (anydoc + OCR) gets its own queue for the same reason.
+    # extraction (anydoc + OCR) gets its own queue for the same reason. An
+    # image-backend connectivity test is a similar occasional, admin-triggered
+    # setup action (~15-90s to actually generate a test image), so it shares
+    # the template-imports queue rather than the generation queue.
     task_routes={
         "runner.import_template": {"queue": "pptmaster-template-imports"},
+        "runner.test_image_backend": {"queue": "pptmaster-template-imports"},
         "runner.extract_material": {"queue": "pptmaster-documents"},
     },
 )

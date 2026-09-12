@@ -10,6 +10,7 @@ import signal
 import stat
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 from datetime import UTC, datetime
@@ -17,6 +18,7 @@ from pathlib import Path, PurePosixPath
 from uuid import UUID
 
 from celery.utils.log import get_task_logger
+from celery.signals import worker_ready
 from sqlalchemy import create_engine, select
 from sqlalchemy.orm import sessionmaker
 
@@ -24,6 +26,7 @@ from api.config import get_settings
 from api.models import (
     Artifact,
     ArtifactKind,
+    ImageProvider,
     Invitation,
     Job,
     JobEvent,
@@ -38,7 +41,7 @@ from api.models import (
     TemplateStatus,
     User,
 )
-from api.provider_config import opencode_config
+from api.provider_config import decrypt_api_key, image_backend_environment, opencode_config
 from skills.registry import artifact_rules, continue_seed_dir, marker_dir, skill_manifest_for
 from .celery_app import celery_app
 
@@ -559,16 +562,63 @@ def _finalize_pending_user_deletion(user_id: UUID) -> None:
             logger.exception("Failed to remove deleted user workspace: %s", user_root)
 
 
-def _job_opencode_config(job: Job) -> str | None:
-    """Build an ephemeral config for a database-managed model."""
-    if not job.model:
+def _resolve_vision_model(db) -> tuple[Provider, ProviderModel] | None:
+    """Look up the optional admin-configured image-review model, if usable."""
+
+    setting = db.get(SystemSetting, "default_vision_model_id")
+    vision_model_id = setting.value if setting else None
+    if not vision_model_id:
         return None
+    result = db.execute(
+        select(Provider, ProviderModel)
+        .join(ProviderModel, ProviderModel.provider_id == Provider.id)
+        .where(Provider.is_active.is_(True), ProviderModel.is_active.is_(True), ProviderModel.is_verified.is_(True))
+    )
+    for provider, model in result.all():
+        if f"{provider.slug}/{model.model_id}" == vision_model_id:
+            return provider, model
+    return None
+
+
+def _image_backend_environment(db) -> dict[str, str]:
+    """Resolve the admin-configured default image backend into job env vars.
+
+    Empty when none is configured, active, and verified — the priority-ladder
+    prompt instruction in worker/adapters/ppt_master.py checks
+    `image_gen.py --list-backends`'s own "Resolved backend:" line at run time,
+    so an empty environment here correctly degrades to no AI image generation
+    without any extra signaling.
+    """
+
+    row = db.execute(
+        select(ImageProvider).where(
+            ImageProvider.is_default.is_(True),
+            ImageProvider.is_active.is_(True),
+            ImageProvider.is_verified.is_(True),
+        )
+    ).scalar_one_or_none()
+    if not row:
+        return {}
+    return image_backend_environment(row, decrypt_api_key(row.api_key_ciphertext))
+
+
+def _job_opencode_config(job: Job) -> tuple[str | None, bool]:
+    """Build an ephemeral config for a database-managed model.
+
+    Returns the config JSON (or None when the job's model was deleted/disabled
+    since it was queued) and whether an image-review subagent was attached.
+    """
+    if not job.model:
+        return None, False
     with SessionLocal() as db:
         result = db.execute(select(Provider, ProviderModel).join(ProviderModel, ProviderModel.provider_id == Provider.id).where(Provider.is_active.is_(True), ProviderModel.is_active.is_(True), ProviderModel.is_verified.is_(True)))
         for provider, model in result.all():
             if f"{provider.slug}/{model.model_id}" == job.model:
-                return json.dumps(opencode_config(provider, model), ensure_ascii=False)
-    return None
+                vision = _resolve_vision_model(db)
+                vision_provider, vision_model = vision if vision else (None, None)
+                config = opencode_config(provider, model, vision_provider, vision_model)
+                return json.dumps(config, ensure_ascii=False), vision is not None
+    return None, False
 
 
 def _template_review_opencode_config() -> str | None:
@@ -588,6 +638,31 @@ def _template_review_opencode_config() -> str | None:
             if f"{provider.slug}/{model.model_id}" == default_model:
                 return json.dumps(opencode_config(provider, model), ensure_ascii=False)
     return None
+
+
+@worker_ready.connect
+def _start_reconcile_watchdog(sender=None, **_) -> None:
+    """Cover runner deaths that never restart the container (OOM-killed child).
+
+    The jobs-queue worker periodically marks RUNNING jobs that no live worker
+    executes as terminal; startup reconciliation in start-runner.sh handles
+    the container-restart case.
+    """
+
+    if os.environ.get("PPTMASTER_QUEUE_ROLE") != "jobs":
+        return
+
+    def loop() -> None:
+        while True:
+            time.sleep(300)
+            try:
+                from runner.reconcile import active_execute_job_ids, reconcile_interrupted_jobs_periodic
+
+                reconcile_interrupted_jobs_periodic(active_execute_job_ids(celery_app))
+            except Exception:  # noqa: BLE001
+                logger.exception("Periodic job reconciliation failed")
+
+    threading.Thread(target=loop, name="reconcile-watchdog", daemon=True).start()
 
 
 @celery_app.task(name="runner.execute_job", bind=True)
@@ -613,8 +688,10 @@ def execute_job(self, job_id_text: str) -> None:
         _copy_project_materials(project, job_workspace)
         if is_continuation or template_workspace:
             _grant_worker_write_access(job_workspace)
-        generated_config = _job_opencode_config(job)
+        generated_config, vision_reviewer_attached = _job_opencode_config(job)
         skill_manifest = skill_manifest_for(job.skill_id)
+        with SessionLocal() as db:
+            image_backend_env = _image_backend_environment(db)
         environment = {
             "PPTMASTER_JOB_ID": str(job.id),
             "PPTMASTER_JOB_PROMPT": job.prompt,
@@ -625,7 +702,9 @@ def execute_job(self, job_id_text: str) -> None:
             "PPTMASTER_WORKSPACE": str(job_workspace),
             "HOME": "/home/pptmaster",
             "PPTMASTER_OPENCODE_IDLE_TIMEOUT_SECONDS": str(settings.opencode_idle_timeout_seconds),
+            "PPTMASTER_VISION_REVIEWER_AVAILABLE": "1" if vision_reviewer_attached else "0",
             **_provider_environment(),
+            **image_backend_env,
         }
         if job.mode:
             environment["PPTMASTER_JOB_MODE"] = job.mode
@@ -1089,3 +1168,49 @@ def extract_material(material_id_text: str) -> None:
     from worker.document.extraction import extract_material as _run
 
     _run(material_id_text)
+
+
+@celery_app.task(name="runner.test_image_backend")
+def test_image_backend(image_provider_id_text: str) -> None:
+    """Actually generate one test image through a configured backend.
+
+    image_gen.py only exists in this runner image (the API container never
+    gets skills/ppt-master/scripts), so the admin endpoint that creates or
+    re-verifies an ImageProvider row can only persist it optimistically and
+    dispatch this task; this is the only place the real backend call happens.
+    """
+
+    image_provider_id = UUID(image_provider_id_text)
+    with SessionLocal() as db:
+        row = db.get(ImageProvider, image_provider_id)
+        if not row:
+            return
+        api_key = decrypt_api_key(row.api_key_ciphertext)
+        env = {**os.environ, **image_backend_environment(row, api_key)}
+    scratch = Path(tempfile.mkdtemp(prefix="image-backend-test-"))
+    try:
+        result = subprocess.run(
+            [
+                sys.executable, str(SKILL_ROOT / "scripts" / "image_gen.py"),
+                "a red circle on a white background",
+                "--backend", row.backend,
+                "-o", str(scratch),
+            ],
+            env=env, cwd="/app", capture_output=True, text=True, timeout=90,
+        )
+        produced = any(scratch.iterdir())
+        error_message = None if result.returncode == 0 and produced else (result.stderr or result.stdout)[-800:] or "生图未产出文件"
+    except subprocess.TimeoutExpired:
+        error_message = "生图测试超时（90 秒）"
+    except Exception as exc:  # noqa: BLE001
+        error_message = str(exc)[:800]
+    finally:
+        shutil.rmtree(scratch, ignore_errors=True)
+    with SessionLocal() as db:
+        row = db.get(ImageProvider, image_provider_id)
+        if not row:
+            return
+        row.is_verified = error_message is None
+        row.last_test_error = error_message
+        row.last_tested_at = datetime.now(UTC)
+        db.commit()

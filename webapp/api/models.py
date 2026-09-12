@@ -342,6 +342,35 @@ class ProviderModel(Base):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     is_default: Mapped[bool] = mapped_column(Boolean, default=False)
     is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
+    # NULL = never probed; a probe result is written only after a passing text
+    # connectivity test, so it never blocks saving or using a text-only model.
+    supports_vision: Mapped[bool | None] = mapped_column(Boolean, nullable=True)
+    last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class ImageProvider(Base):
+    """An administrator-managed image-generation backend for image_gen.py.
+
+    Distinct from Provider/ProviderModel: image_gen.py backends are not
+    OpenAI-chat-compatible, each has its own env-var contract
+    ({BACKEND}_API_KEY / _BASE_URL / _MODEL), and there is no separate
+    provider/model split — one row is one fully configured backend.
+    """
+
+    __tablename__ = "image_providers"
+
+    id: Mapped[uuid.UUID] = mapped_column(primary_key=True, default=uuid.uuid4)
+    backend: Mapped[str] = mapped_column(String(32))
+    display_name: Mapped[str] = mapped_column(String(120))
+    api_key_ciphertext: Mapped[str] = mapped_column(Text)
+    api_key_hint: Mapped[str] = mapped_column(String(24))
+    base_url_override: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    model_override: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    is_default: Mapped[bool] = mapped_column(Boolean, default=False)
+    is_verified: Mapped[bool] = mapped_column(Boolean, default=False)
     last_tested_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     last_test_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

@@ -1,6 +1,13 @@
 export type User = { id: string; username: string; display_name: string; role: string; is_active: boolean; deletion_pending: boolean };
-export type ProviderModel = { id: string; model_id: string; display_name: string; is_active: boolean; is_default: boolean; is_verified: boolean; last_tested_at: string | null; last_test_error: string | null };
+export type ProviderModel = { id: string; model_id: string; display_name: string; is_active: boolean; is_default: boolean; is_verified: boolean; supports_vision: boolean | null; last_tested_at: string | null; last_test_error: string | null };
 export type Provider = { id: string; slug: string; display_name: string; base_url: string; api_key_hint: string; is_active: boolean; models: ProviderModel[] };
+export type ModelCatalogEntry = { model_id: string; source: string; provider_id: string | null; provider_display_name: string | null; is_available: boolean; is_default: boolean; supports_vision: boolean | null; is_default_vision: boolean };
+export type ImageProvider = { id: string; backend: string; display_name: string; api_key_hint: string; base_url_override: string | null; model_override: string | null; is_active: boolean; is_default: boolean; is_verified: boolean; last_tested_at: string | null; last_test_error: string | null };
+export const IMAGE_BACKEND_CHOICES = [
+  "gemini", "openai", "qwen", "volcengine", "zhipu",
+  "bfl", "ideogram", "stability",
+  "fal", "minimax", "modelscope", "openrouter", "replicate", "siliconflow",
+] as const;
 export type ProjectCover = { job_id: string; artifact_id: string; kind: string };
 export type Project = { id: string; title: string; skill_id: string; mode: string | null; created_at: string; updated_at: string; cover: ProjectCover | null };
 export type SkillStage = { id: string; label: string; description: string };

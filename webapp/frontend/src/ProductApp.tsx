@@ -8,7 +8,7 @@ import { AdminPage as AssetAdminPage } from "./AdminPage";
 import { ReplicaProjectCard as AssetReplicaProjectCard } from "./ProjectsPage";
 import { AssetEmptyState, AsyncButton, NoticeHost, PageRangeSelect, UploadButton } from "./ui";
 import { useTheme } from "./theme";
-import type { Artifact, Job, JobEvent, JobStatus, ModalState, NavKey, Project, ProjectMaterial, PromptPreset, PromptPresetSlide, PromptSnippet, Provider, ProviderModel, Skill, Template, User } from "./appTypes";
+import type { Artifact, ImageProvider, Job, JobEvent, JobStatus, ModalState, ModelCatalogEntry, NavKey, Project, ProjectMaterial, PromptPreset, PromptPresetSlide, PromptSnippet, Provider, ProviderModel, Skill, Template, User } from "./appTypes";
 import {
   ArrowRight,
   ArrowLeft,
@@ -209,6 +209,8 @@ export function ProductApp() {
   const [adminSnippets, setAdminSnippets] = useState<PromptSnippet[]>([]);
   const [adminUsers, setAdminUsers] = useState<User[]>([]);
   const [adminProviders, setAdminProviders] = useState<Provider[]>([]);
+  const [adminModelCatalog, setAdminModelCatalog] = useState<ModelCatalogEntry[]>([]);
+  const [adminImageProviders, setAdminImageProviders] = useState<ImageProvider[]>([]);
   const [modelStatus, setModelStatus] = useState<ModelStatus | null>(null);
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [selectedJobId, setSelectedJobId] = useState<string | null>(null);
@@ -291,16 +293,20 @@ export function ProductApp() {
     return materials;
   }, []);
   const loadAdminData = useCallback(async () => {
-    const [nextTemplates, nextSnippets, nextUsers, nextProviders] = await Promise.all([
+    const [nextTemplates, nextSnippets, nextUsers, nextProviders, nextModelCatalog, nextImageProviders] = await Promise.all([
       request<Template[]>("/api/v1/admin/system-templates"),
       request<PromptSnippet[]>("/api/v1/admin/system-prompts"),
       request<User[]>("/api/v1/admin/users"),
       request<Provider[]>("/api/v1/admin/providers"),
+      request<ModelCatalogEntry[]>("/api/v1/admin/model-catalog"),
+      request<ImageProvider[]>("/api/v1/admin/image-providers"),
     ]);
     setAdminTemplates(nextTemplates);
     setAdminSnippets(nextSnippets);
     setAdminUsers(nextUsers);
     setAdminProviders(nextProviders);
+    setAdminModelCatalog(nextModelCatalog);
+    setAdminImageProviders(nextImageProviders);
   }, []);
 
   useEffect(() => {
@@ -785,7 +791,7 @@ export function ProductApp() {
     : nav === "prompts"
       ? <AssetPromptsPage snippets={snippets} query={promptQuery} setQuery={setPromptQuery} notice={notice} onUse={selectPromptPreset} onCreate={() => openPromptEditor(null)} onEdit={openPromptEditor} onDelete={(snippet) => { setTargetSnippet(snippet); setModal("prompt-delete"); }} skillId={draftSkillId} />
       : nav === "admin" && isPlatformAdmin
-         ? <AssetAdminPage initialTab={route.kind === "admin" ? route.tab : "templates"} onTabChange={(tab) => navigate(`/admin/${tab}`)} templates={adminTemplates} snippets={adminSnippets} users={adminUsers} providers={adminProviders} onRefresh={loadAdminData} />
+         ? <AssetAdminPage initialTab={route.kind === "admin" ? route.tab : "templates"} onTabChange={(tab) => navigate(`/admin/${tab}`)} templates={adminTemplates} snippets={adminSnippets} users={adminUsers} providers={adminProviders} modelCatalog={adminModelCatalog} imageProviders={adminImageProviders} onRefresh={loadAdminData} />
          : null;
 
   const renderAssetModal = () => <>

@@ -827,6 +827,11 @@ input:focus, textarea:focus, select:focus { border-color: #0f766e; outline: 2px 
 .kppt-model-test-success { color: #16834a; }
 .kppt-model-test-error { color: #c9000b; }
 .kppt-admin-model-form .kppt-admin-form-actions { grid-column: 1 / -1; }
+.kppt-admin-model-form select, .kppt-admin-form select { min-height: 32px; padding: 0 8px; border: 1px solid var(--zc-line-strong); border-radius: 6px; background: var(--zc-surface); color: var(--zc-text); font-size: 11px; }
+.kppt-vision-default { display: grid; gap: 6px; margin-top: 20px; padding: 16px; border: 1px solid var(--zc-line); border-radius: 9px; background: var(--zc-surface); }
+.kppt-vision-default strong { color: var(--zc-text); font-size: 13px; }
+.kppt-vision-default p { margin: 0; color: var(--zc-muted); font-size: 11px; }
+.kppt-vision-default select { max-width: 320px; }
 .zc-admin-prompt-form { display: grid; grid-template-columns: 1fr 140px; gap: 8px; margin-top: 22px; }
 .zc-admin-prompt-form input, .zc-admin-prompt-form textarea { width: 100%; padding: 9px 10px; border: 1px solid var(--zc-line-strong); border-radius: 7px; outline: 0; background: var(--zc-subtle); color: var(--zc-text); font-size: 11px; }
 .zc-admin-prompt-form textarea { grid-column: 1 / -1; resize: vertical; }

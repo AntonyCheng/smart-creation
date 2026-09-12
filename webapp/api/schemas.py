@@ -308,10 +308,16 @@ class ModelCatalogOut(BaseModel):
     provider_display_name: str | None = None
     is_available: bool
     is_default: bool
+    supports_vision: bool | None = None
+    is_default_vision: bool = False
 
 
 class ModelCatalogDefaultIn(BaseModel):
     model_id: str = Field(min_length=1, max_length=255)
+
+
+class ModelCatalogDefaultVisionIn(BaseModel):
+    model_id: str | None = Field(default=None, max_length=255)
 
 
 class ProviderModelIn(BaseModel):
@@ -348,6 +354,7 @@ class ProviderModelOut(BaseModel):
     is_active: bool
     is_default: bool
     is_verified: bool
+    supports_vision: bool | None = None
     last_tested_at: datetime | None
     last_test_error: str | None
 
@@ -376,6 +383,7 @@ class ModelConnectivityTestOut(BaseModel):
     success: bool
     message: str
     tested_at: datetime
+    supports_vision: bool | None = None
 
 
 class ExistingProviderModelConnectivityTestIn(BaseModel):
@@ -387,6 +395,41 @@ class ModelStatusOut(BaseModel):
     model_id: str | None
     provider_display_name: str | None
     message: str
+
+
+class ImageProviderIn(BaseModel):
+    backend: str = Field(min_length=2, max_length=32)
+    display_name: str = Field(min_length=1, max_length=120)
+    api_key: str = Field(min_length=1, max_length=4096)
+    base_url_override: str | None = Field(default=None, max_length=1024)
+    model_override: str | None = Field(default=None, max_length=255)
+    is_active: bool = True
+
+
+class ImageProviderUpdateIn(BaseModel):
+    display_name: str | None = Field(default=None, min_length=1, max_length=120)
+    api_key: str | None = Field(default=None, min_length=1, max_length=4096)
+    base_url_override: str | None = Field(default=None, max_length=1024)
+    model_override: str | None = Field(default=None, max_length=255)
+    is_active: bool | None = None
+
+
+class ImageProviderOut(BaseModel):
+    id: UUID
+    backend: str
+    display_name: str
+    api_key_hint: str
+    base_url_override: str | None
+    model_override: str | None
+    is_active: bool
+    is_default: bool
+    is_verified: bool
+    last_tested_at: datetime | None
+    last_test_error: str | None
+
+
+class ImageProviderDefaultIn(BaseModel):
+    image_provider_id: UUID | None = None
 
 
 class JobEventOut(BaseModel):

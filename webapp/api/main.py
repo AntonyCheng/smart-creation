@@ -11,10 +11,12 @@ import json
 import logging
 import re
 import shutil
+import struct
 import tempfile
 import time
 import xml.etree.ElementTree as ET
 import zipfile
+import zlib
 from collections.abc import AsyncIterator, Sequence
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime, timedelta
@@ -49,6 +51,7 @@ from .models import (
     Artifact,
     ArtifactKind,
     AuthSession,
+    ImageProvider,
     Invitation,
     Job,
     JobEvent,
@@ -87,6 +90,11 @@ from .schemas import (
     ModelConnectivityTestIn,
     ModelConnectivityTestOut,
     ExistingProviderModelConnectivityTestIn,
+    ImageProviderDefaultIn,
+    ImageProviderIn,
+    ImageProviderOut,
+    ImageProviderUpdateIn,
+    ModelCatalogDefaultVisionIn,
     ModelOut,
     ModelStatusOut,
     OutlineSlideIn,
@@ -136,7 +144,7 @@ from .security import (
     token_hash,
     verify_password,
 )
-from .provider_config import decrypt_api_key, encrypt_api_key, key_hint
+from .provider_config import IMAGE_BACKEND_CHOICES, decrypt_api_key, encrypt_api_key, key_hint
 
 settings = get_settings()
 FRONTEND_DIST = Path(__file__).resolve().parents[1] / "frontend" / "dist"
@@ -704,6 +712,54 @@ def _test_model_connectivity_sync(base_url: str, api_key: str, model_id: str) ->
         raise _ModelConnectivityError("模型服务响应格式不符合 OpenAI 兼容接口")
 
 
+def _solid_red_png_data_url() -> str:
+    """Build a tiny solid-red PNG in-process, with no bundled test asset."""
+
+    def chunk(tag: bytes, data: bytes) -> bytes:
+        payload = tag + data
+        return struct.pack(">I", len(data)) + payload + struct.pack(">I", zlib.crc32(payload) & 0xFFFFFFFF)
+
+    width = height = 4
+    ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
+    raw = (b"\x00" + bytes((255, 0, 0)) * width) * height
+    png = b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b"")
+    return "data:image/png;base64," + base64.b64encode(png).decode("ascii")
+
+
+def _probe_vision_support_sync(base_url: str, api_key: str, model_id: str) -> bool:
+    """Best-effort check that a model actually accepts image input.
+
+    Never raises: a probe failure only means `supports_vision` stays False,
+    it must never block saving or verifying an otherwise-working text model.
+    """
+
+    try:
+        endpoint = _validate_provider_url(base_url) + "/chat/completions"
+        body = json.dumps({
+            "model": model_id.strip(),
+            "messages": [{
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "This image is a solid color square. Answer with exactly one word: the color name."},
+                    {"type": "image_url", "image_url": {"url": _solid_red_png_data_url()}},
+                ],
+            }],
+            "temperature": 0,
+            "max_tokens": 300,
+            "stream": False,
+        }).encode("utf-8")
+        request = UrlRequest(endpoint, data=body, headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {api_key}",
+        }, method="POST")
+        with urlopen(request, timeout=40) as response:
+            payload = json.loads(response.read(128 * 1024).decode("utf-8"))
+        content = (((payload.get("choices") or [{}])[0].get("message") or {}).get("content")) or ""
+        return "red" in content.lower()
+    except Exception:  # noqa: BLE001
+        return False
+
+
 async def _active_model_credentials(db: AsyncSession) -> tuple[str, str, str] | None:
     """Resolve the administrator-selected model without exposing provider secrets."""
 
@@ -916,7 +972,7 @@ def _provider_out(provider: Provider, models: list[ProviderModel]) -> ProviderOu
     return ProviderOut(
         id=provider.id, slug=provider.slug, display_name=provider.display_name,
         base_url=provider.base_url, api_key_hint=provider.api_key_hint, is_active=provider.is_active,
-        models=[ProviderModelOut(id=model.id, model_id=model.model_id, display_name=model.display_name, is_active=model.is_active, is_default=model.is_default, is_verified=model.is_verified, last_tested_at=model.last_tested_at, last_test_error=model.last_test_error) for model in models],
+        models=[ProviderModelOut(id=model.id, model_id=model.model_id, display_name=model.display_name, is_active=model.is_active, is_default=model.is_default, is_verified=model.is_verified, supports_vision=model.supports_vision, last_tested_at=model.last_tested_at, last_test_error=model.last_test_error) for model in models],
     )
 
 
@@ -928,6 +984,7 @@ def _provider_model_out(model: ProviderModel) -> ProviderModelOut:
         is_active=model.is_active,
         is_default=model.is_default,
         is_verified=model.is_verified,
+        supports_vision=model.supports_vision,
         last_tested_at=model.last_tested_at,
         last_test_error=model.last_test_error,
     )
@@ -937,10 +994,9 @@ async def _model_catalog(db: AsyncSession) -> list[ModelCatalogOut]:
     """Return only administrator-managed models; environment models are not supported."""
 
     default_setting = await db.get(SystemSetting, "default_model_id")
-    if default_setting is not None:
-        default_model = default_setting.value or None
-    else:
-        default_model = None
+    default_model = (default_setting.value or None) if default_setting is not None else None
+    vision_setting = await db.get(SystemSetting, "default_vision_model_id")
+    default_vision_model = (vision_setting.value or None) if vision_setting is not None else None
 
     catalog: list[ModelCatalogOut] = []
     managed = await db.execute(
@@ -958,6 +1014,8 @@ async def _model_catalog(db: AsyncSession) -> list[ModelCatalogOut]:
                 provider_display_name=provider.display_name,
                 is_available=provider.is_active and provider_model.is_active and provider_model.is_verified,
                 is_default=model_id == default_model,
+                supports_vision=provider_model.supports_vision,
+                is_default_vision=model_id == default_vision_model,
             )
         )
     return catalog
@@ -977,12 +1035,28 @@ async def _set_default_model(db: AsyncSession, model_id: str | None) -> None:
         model.is_default = bool(model_id and f"{provider.slug}/{model.model_id}" == model_id)
 
 
+async def _set_default_vision_model(db: AsyncSession, model_id: str | None) -> None:
+    """Persist the optional global vision-review model, independent of the
+
+    primary generation model's `ProviderModel.is_default` flag.
+    """
+
+    setting = await db.get(SystemSetting, "default_vision_model_id")
+    if setting is None:
+        db.add(SystemSetting(key="default_vision_model_id", value=model_id or ""))
+    else:
+        setting.value = model_id or ""
+
+
 async def _clear_default_if_selected(db: AsyncSession, model_ids: list[str]) -> None:
-    """Clear the global default only when an operation makes it unavailable."""
+    """Clear the global default(s) only when an operation makes them unavailable."""
 
     selected = set(model_ids)
-    if any(item.is_default and item.model_id in selected for item in await _model_catalog(db)):
+    catalog = await _model_catalog(db)
+    if any(item.is_default and item.model_id in selected for item in catalog):
         await _set_default_model(db, None)
+    if any(item.is_default_vision and item.model_id in selected for item in catalog):
+        await _set_default_vision_model(db, None)
 
 
 async def _ensure_models_are_idle(db: AsyncSession, model_ids: list[str]) -> None:
@@ -1781,7 +1855,8 @@ async def admin_test_model_connectivity(
         )
     except _ModelConnectivityError as exc:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"MODEL_CONNECTIVITY_FAILED: {exc}") from exc
-    return ModelConnectivityTestOut(success=True, message="模型连通性测试通过。", tested_at=tested_at)
+    supports_vision = await asyncio.to_thread(_probe_vision_support_sync, payload.base_url, payload.api_key, payload.model_id)
+    return ModelConnectivityTestOut(success=True, message="模型连通性测试通过。", tested_at=tested_at, supports_vision=supports_vision)
 
 
 @app.post("/api/v1/admin/providers/{provider_id}/model-connectivity-test", response_model=ModelConnectivityTestOut)
@@ -1803,7 +1878,8 @@ async def admin_test_existing_provider_model_connectivity(
     except (HTTPException, RuntimeError, _ModelConnectivityError) as exc:
         message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"MODEL_CONNECTIVITY_FAILED: {message}") from exc
-    return ModelConnectivityTestOut(success=True, message="模型连通性测试通过。", tested_at=datetime.now(UTC))
+    supports_vision = await asyncio.to_thread(_probe_vision_support_sync, provider.base_url, api_key, payload.model_id)
+    return ModelConnectivityTestOut(success=True, message="模型连通性测试通过。", tested_at=datetime.now(UTC), supports_vision=supports_vision)
 
 
 @app.post("/api/v1/admin/providers", response_model=ProviderOut, status_code=status.HTTP_201_CREATED)
@@ -1892,18 +1968,21 @@ async def admin_create_model(provider_id: UUID, payload: ProviderModelIn, admin:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "模型服务商不存在")
     if not provider.is_active:
         raise HTTPException(status.HTTP_409_CONFLICT, "请先启用供应商")
+    api_key = decrypt_api_key(provider.api_key_ciphertext)
     try:
-        await asyncio.to_thread(_test_model_connectivity_sync, provider.base_url, decrypt_api_key(provider.api_key_ciphertext), payload.model_id.strip())
+        await asyncio.to_thread(_test_model_connectivity_sync, provider.base_url, api_key, payload.model_id.strip())
     except (HTTPException, RuntimeError, _ModelConnectivityError) as exc:
         message = str(exc.detail) if isinstance(exc, HTTPException) else str(exc)
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"MODEL_CONNECTIVITY_FAILED: {message}") from exc
     now = datetime.now(UTC)
+    supports_vision = await asyncio.to_thread(_probe_vision_support_sync, provider.base_url, api_key, payload.model_id.strip())
     model = ProviderModel(
         provider_id=provider_id,
         model_id=payload.model_id.strip(),
         display_name=payload.display_name.strip(),
         is_active=payload.is_active,
         is_verified=True,
+        supports_vision=supports_vision,
         last_tested_at=now,
     )
     db.add(model)
@@ -1958,6 +2037,7 @@ async def admin_verify_existing_model(model_id: UUID, admin: User = Depends(requ
         await db.commit()
         raise HTTPException(status.HTTP_400_BAD_REQUEST, f"MODEL_CONNECTIVITY_FAILED: {message}") from exc
     model.is_verified = True
+    model.supports_vision = await asyncio.to_thread(_probe_vision_support_sync, provider.base_url, api_key, model.model_id)
     model.last_tested_at = datetime.now(UTC)
     model.last_test_error = None
     await db.commit()
@@ -1986,6 +2066,133 @@ async def admin_delete_model(model_id: UUID, admin: User = Depends(require_super
     await db.commit()
 
 
+def _image_provider_out(row: ImageProvider) -> ImageProviderOut:
+    return ImageProviderOut(
+        id=row.id, backend=row.backend, display_name=row.display_name,
+        api_key_hint=row.api_key_hint, base_url_override=row.base_url_override,
+        model_override=row.model_override, is_active=row.is_active,
+        is_default=row.is_default, is_verified=row.is_verified,
+        last_tested_at=row.last_tested_at, last_test_error=row.last_test_error,
+    )
+
+
+@app.get("/api/v1/admin/image-providers", response_model=list[ImageProviderOut])
+async def admin_list_image_providers(admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> list[ImageProviderOut]:
+    """List every configured image-generation backend, verified or not."""
+
+    del admin
+    rows = (await db.execute(select(ImageProvider).order_by(ImageProvider.display_name))).scalars().all()
+    return [_image_provider_out(row) for row in rows]
+
+
+@app.post("/api/v1/admin/image-providers", response_model=ImageProviderOut, status_code=status.HTTP_201_CREATED)
+async def admin_create_image_provider(payload: ImageProviderIn, admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> ImageProviderOut:
+    """Persist one image backend and dispatch its connectivity test to the runner.
+
+    image_gen.py only lives in the runner image (see pptmaster-api's
+    Dockerfile.web, which never copies skills/ppt-master/scripts), so unlike
+    the LLM connectivity test this cannot run inline in the API process; it
+    follows the platform's existing fire-and-forget Celery pattern
+    (runner.import_template / runner.extract_material) instead of a
+    synchronous test-then-persist flow.
+    """
+
+    del admin
+    backend = payload.backend.strip().lower()
+    if backend not in IMAGE_BACKEND_CHOICES:
+        raise HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, f"不支持的生图后端：{backend}")
+    row = ImageProvider(
+        backend=backend,
+        display_name=payload.display_name.strip(),
+        api_key_ciphertext=encrypt_api_key(payload.api_key),
+        api_key_hint=key_hint(payload.api_key),
+        base_url_override=(payload.base_url_override or "").strip() or None,
+        model_override=(payload.model_override or "").strip() or None,
+        is_active=payload.is_active,
+        last_test_error="正在测试连通性（需要真实生成一张测试图，最长约 90 秒），请稍候刷新查看结果。",
+    )
+    db.add(row)
+    await db.commit()
+    await db.refresh(row)
+    from runner.celery_app import celery_app
+    celery_app.send_task("runner.test_image_backend", args=[str(row.id)])
+    return _image_provider_out(row)
+
+
+@app.patch("/api/v1/admin/image-providers/default", response_model=list[ImageProviderOut])
+async def admin_set_default_image_provider(payload: ImageProviderDefaultIn, admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> list[ImageProviderOut]:
+    """Set (or clear, with a null id) the single active image-generation backend.
+
+    Registered before the /{image_provider_id} PATCH route below: FastAPI
+    matches path operations in declaration order, so a literal "/default"
+    segment must come first or it would be swallowed as a UUID path param
+    and fail validation instead of reaching this handler.
+    """
+
+    del admin
+    rows = (await db.execute(select(ImageProvider))).scalars().all()
+    if payload.image_provider_id is not None:
+        target = next((row for row in rows if row.id == payload.image_provider_id), None)
+        if not target or not target.is_active or not target.is_verified:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "只能将已启用且已通过测试的生图后端设为默认")
+    for row in rows:
+        row.is_default = payload.image_provider_id is not None and row.id == payload.image_provider_id
+    await db.commit()
+    return [_image_provider_out(row) for row in sorted(rows, key=lambda item: item.display_name)]
+
+
+@app.patch("/api/v1/admin/image-providers/{image_provider_id}", response_model=ImageProviderOut)
+async def admin_update_image_provider(image_provider_id: UUID, payload: ImageProviderUpdateIn, admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> ImageProviderOut:
+    del admin
+    row = await db.get(ImageProvider, image_provider_id)
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "生图后端不存在")
+    credentials_changed = payload.api_key is not None or payload.base_url_override is not None or payload.model_override is not None
+    if payload.display_name is not None:
+        row.display_name = payload.display_name.strip()
+    if payload.api_key is not None:
+        row.api_key_ciphertext, row.api_key_hint = encrypt_api_key(payload.api_key), key_hint(payload.api_key)
+    if payload.base_url_override is not None:
+        row.base_url_override = payload.base_url_override.strip() or None
+    if payload.model_override is not None:
+        row.model_override = payload.model_override.strip() or None
+    if payload.is_active is not None:
+        row.is_active = payload.is_active
+        if not payload.is_active:
+            row.is_default = False
+    if credentials_changed:
+        row.is_verified = False
+        row.is_default = False
+        row.last_test_error = "配置已变更，需要重新测试连通性。"
+    await db.commit()
+    return _image_provider_out(row)
+
+
+@app.post("/api/v1/admin/image-providers/{image_provider_id}/verify", response_model=ImageProviderOut)
+async def admin_verify_image_provider(image_provider_id: UUID, admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> ImageProviderOut:
+    """Dispatch a real test-image generation to the runner; poll the list for the result."""
+
+    del admin
+    row = await db.get(ImageProvider, image_provider_id)
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "生图后端不存在")
+    row.last_test_error = "正在测试连通性（需要真实生成一张测试图，最长约 90 秒），请稍候刷新查看结果。"
+    await db.commit()
+    from runner.celery_app import celery_app
+    celery_app.send_task("runner.test_image_backend", args=[str(row.id)])
+    return _image_provider_out(row)
+
+
+@app.delete("/api/v1/admin/image-providers/{image_provider_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def admin_delete_image_provider(image_provider_id: UUID, admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> None:
+    del admin
+    row = await db.get(ImageProvider, image_provider_id)
+    if not row:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "生图后端不存在")
+    await db.delete(row)
+    await db.commit()
+
+
 @app.get("/api/v1/admin/model-catalog", response_model=list[ModelCatalogOut])
 async def admin_list_model_catalog(admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> list[ModelCatalogOut]:
     """List every model the platform knows, including disabled entries."""
@@ -2004,6 +2211,27 @@ async def admin_update_default_model(payload: ModelCatalogDefaultIn, admin: User
     if not entry or not entry.is_available:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, "只能激活当前可用的模型")
     await _set_default_model(db, payload.model_id)
+    await db.commit()
+    return await _model_catalog(db)
+
+
+@app.patch("/api/v1/admin/model-catalog/default-vision", response_model=list[ModelCatalogOut])
+async def admin_update_default_vision_model(payload: ModelCatalogDefaultVisionIn, admin: User = Depends(require_super_admin), db: AsyncSession = Depends(get_db)) -> list[ModelCatalogOut]:
+    """Set (or clear) the optional model used for image-candidate review.
+
+    Unlike the primary generation model, this may be null: vision review is
+    an optional enhancement, not a requirement for generation to work.
+    """
+
+    del admin
+    if payload.model_id is not None:
+        catalog = await _model_catalog(db)
+        entry = next((item for item in catalog if item.model_id == payload.model_id), None)
+        if not entry or not entry.is_available:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "只能激活当前可用的模型")
+        if not entry.supports_vision:
+            raise HTTPException(status.HTTP_400_BAD_REQUEST, "该模型尚未探测到支持图片输入")
+    await _set_default_vision_model(db, payload.model_id)
     await db.commit()
     return await _model_catalog(db)
 
